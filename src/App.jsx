@@ -6,6 +6,7 @@ import NovelDetail from './pages/NovelDetail';
 import ChapterPage from './pages/ChapterPage';
 import ResourceLibrary from './pages/ResourceLibrary';
 import ResourceDetail from './pages/ResourceDetail';
+import RuleLibrary from './pages/RuleLibrary';
 
 const App = () => {
   return (
@@ -16,6 +17,7 @@ const App = () => {
         <Route path="/novel/:novelId/chapter/:chapterId" element={<ChapterPage />} />
         <Route path="/resources" element={<ResourceLibrary />} />
         <Route path="/resources/:type/:resourceId" element={<ResourceDetail />} />
+        <Route path="/rules" element={<RuleLibrary />} />
       </Routes>
     </Layout>
   );

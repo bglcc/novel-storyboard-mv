@@ -10,8 +10,12 @@ const defaultData = {
     characters: [],
     expressions: [],
     scenes: [],
-    props: []
-  }
+    props: [],
+    animations: [],
+    music: [],
+    voiceovers: []
+  },
+  rules: []
 };
 
 export const DataProvider = ({ children }) => {
@@ -19,7 +23,25 @@ export const DataProvider = ({ children }) => {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       try {
-        return JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        return {
+          ...defaultData,
+          ...parsed,
+          resources: { ...defaultData.resources, ...(parsed.resources || {}) },
+          rules: parsed.rules || [],
+          novels: (parsed.novels || []).map((novel) => ({
+            ...novel,
+            cover: novel.cover ?? '',
+            chapters: (novel.chapters || []).map((chapter) => ({
+              id: chapter.id,
+              title: chapter.title,
+              status: chapter.status || '仅录入',
+              content: chapter.content || '',
+              storyboards: chapter.storyboards || [],
+              storyboardUpdatedAt: chapter.storyboardUpdatedAt || null
+            }))
+          }))
+        };
       } catch (e) {
         console.error('Failed to parse stored data', e);
       }
@@ -31,37 +53,37 @@ export const DataProvider = ({ children }) => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }, [data]);
 
-  const addNovel = (title) => {
-    const newNovel = { id: uuidv4(), title, createdAt: Date.now(), chapters: [] };
+  const addNovel = (title, cover = '') => {
+    const newNovel = { id: uuidv4(), title, cover, createdAt: Date.now(), chapters: [] };
     setData((prev) => ({ ...prev, novels: [...prev.novels, newNovel] }));
+    return newNovel.id;
   };
 
   const deleteNovel = (id) => {
     setData((prev) => ({ ...prev, novels: prev.novels.filter((n) => n.id !== id) }));
   };
 
-  const addChapter = (novelId, title) => {
+  const addChapter = (novelId, title, content) => {
+    const newChapter = {
+      id: uuidv4(),
+      title,
+      status: '仅录入',
+      content: content || '',
+      storyboards: [],
+      storyboardUpdatedAt: null
+    };
     setData((prev) => ({
       ...prev,
       novels: prev.novels.map((novel) =>
         novel.id === novelId
           ? {
               ...novel,
-              chapters: [
-                ...novel.chapters,
-                {
-                  id: uuidv4(),
-                  title,
-                  status: '仅录入',
-                  content: '',
-                  storyboards: [],
-                  storyboardUpdatedAt: null
-                }
-              ]
+              chapters: [...novel.chapters, newChapter]
             }
           : novel
       )
     }));
+    return newChapter.id;
   };
 
   const updateChapter = (novelId, chapterId, updates) => {
@@ -82,12 +104,38 @@ export const DataProvider = ({ children }) => {
 
   const upsertResource = (type, resource) => {
     setData((prev) => {
-      const existing = prev.resources[type].find((r) => r.id === resource.id || r.name === resource.name);
+      const collection = prev.resources[type] || [];
+      const existing = collection.find((r) => r.id === resource.id || r.name === resource.name);
       const updatedList = existing
-        ? prev.resources[type].map((r) => (r.id === existing.id ? { ...existing, ...resource } : r))
-        : [...prev.resources[type], { ...resource, id: resource.id || uuidv4() }];
+        ? collection.map((r) => (r.id === existing.id ? { ...existing, ...resource } : r))
+        : [...collection, { ...resource, id: resource.id || uuidv4() }];
       return { ...prev, resources: { ...prev.resources, [type]: updatedList } };
     });
+  };
+
+  const upsertRule = (rule) => {
+    setData((prev) => {
+      const rules = prev.rules || [];
+      const existing = rules.find((r) => r.id === rule.id || r.tool === rule.tool);
+      const updatedRules = existing
+        ? rules.map((r) => {
+            if (r.id !== existing.id) return r;
+            const nextVersion = (r.version || 1) + 1;
+            const history = [...(r.history || []), { version: r.version || 1, snapshot: { ...r } }];
+            return { ...r, ...rule, id: r.id, version: nextVersion, history };
+          })
+        : [...rules, { ...rule, id: rule.id || uuidv4(), version: 1, history: [] }];
+      return { ...prev, rules: updatedRules };
+    });
+  };
+
+  const deleteRule = (ruleId) => {
+    setData((prev) => ({ ...prev, rules: prev.rules.filter((r) => r.id !== ruleId) }));
+  };
+
+  const importRules = (rules) => {
+    if (!Array.isArray(rules)) return;
+    setData((prev) => ({ ...prev, rules: rules.map((r) => ({ ...r, id: r.id || uuidv4() })) }));
   };
 
   const ensurePlaceholderResources = (missing) => {
@@ -107,7 +155,7 @@ export const DataProvider = ({ children }) => {
       ...prev,
       resources: {
         ...prev.resources,
-        [type]: prev.resources[type].map((r) =>
+        [type]: (prev.resources[type] || []).map((r) =>
           r.id === resourceId
             ? {
                 ...r,
@@ -129,7 +177,10 @@ export const DataProvider = ({ children }) => {
     updateChapter,
     upsertResource,
     ensurePlaceholderResources,
-    updateResourceImages
+    updateResourceImages,
+    upsertRule,
+    deleteRule,
+    importRules
   };
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
