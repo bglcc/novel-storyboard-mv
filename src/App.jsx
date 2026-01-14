@@ -7,6 +7,8 @@ import ChapterPage from './pages/ChapterPage';
 import ResourceLibrary from './pages/ResourceLibrary';
 import ResourceDetail from './pages/ResourceDetail';
 import RuleLibrary from './pages/RuleLibrary';
+import ExpressionFormsLibrary from './pages/ExpressionFormsLibrary';
+import ExpressionFormDetail from './pages/ExpressionFormDetail';
 
 const App = () => {
   return (
@@ -17,6 +19,8 @@ const App = () => {
         <Route path="/novel/:novelId/chapter/:chapterId" element={<ChapterPage />} />
         <Route path="/resources" element={<ResourceLibrary />} />
         <Route path="/resources/:type/:resourceId" element={<ResourceDetail />} />
+        <Route path="/expression-forms" element={<ExpressionFormsLibrary />} />
+        <Route path="/expression-forms/:expressionId" element={<ExpressionFormDetail />} />
         <Route path="/rules" element={<RuleLibrary />} />
       </Routes>
     </Layout>

@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useData } from '../context/DataContext';
+import { getExpressionForms } from '../utils/expressionFormsDb';
 
 const shotTypeOptions = ['大全景', '中景', '近景', '特写', '俯视', '仰视'];
 const angleOptions = ['正面', '侧面', '背面', '俯视', '仰视'];
@@ -39,7 +40,8 @@ const emptyShot = (idx) => ({
   audioDialogue: '',
   audioTone: '',
   audioBgm: '',
-  audioSfx: ''
+  audioSfx: '',
+  expressionFormId: ''
 });
 
 const StoryboardEditor = ({ novelId, chapter }) => {
@@ -50,10 +52,21 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const [resourceSectionState, setResourceSectionState] = useState({});
   const [pendingDelete, setPendingDelete] = useState(null);
   const [pendingKeyframeDelete, setPendingKeyframeDelete] = useState(null);
+  const [expressionForms, setExpressionForms] = useState([]);
 
   const scenes = data.resources.scenes || [];
   const characters = data.resources.characters || [];
   const props = data.resources.props || [];
+
+  useEffect(() => {
+    let active = true;
+    getExpressionForms().then((forms) => {
+      if (active) setExpressionForms(forms);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const getActiveTab = (shotId) => activeTabs[shotId] || 'frame';
   const getSideTab = (shotId) => sideTabsState[shotId] || 'info';
@@ -71,6 +84,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const detectMissingResources = (shots) => {
     const missing = [];
     const { resources } = data;
+    const expressionLookup = new Map(expressionForms.map((form) => [form.id, form.name || form.id]));
     const ensureItem = (type, name) => {
       if (!name) return;
       const exists = resources[type].some((r) => r.name === name);
@@ -83,6 +97,10 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       ensureItem('scenes', shot.scene);
       (shot.characters || []).forEach((c) => ensureItem('characters', c));
       (shot.props || []).forEach((p) => ensureItem('props', p));
+      if (shot.expressionFormId) {
+        const expressionName = expressionLookup.get(shot.expressionFormId) || shot.expressionFormId;
+        ensureItem('expressions', expressionName);
+      }
     });
     return missing;
   };
@@ -123,7 +141,8 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           audioDialogue: shot.audioDialogue || '',
           audioTone: shot.audioTone || '',
           audioBgm: shot.audioBgm || '',
-          audioSfx: shot.audioSfx || ''
+          audioSfx: shot.audioSfx || '',
+          expressionFormId: shot.expressionFormId || ''
         }));
         updateShots(normalized);
       } catch (err) {
@@ -379,6 +398,28 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                               onChange={(e) => updateShotField(shot.id, 'description', e.target.value)}
                             />
                           </label>
+                          <label>
+                            颜艺形态（Expression Form）
+                            <select
+                              value={shot.expressionFormId || ''}
+                              onChange={(e) => updateShotField(shot.id, 'expressionFormId', e.target.value)}
+                            >
+                              <option value="">不使用</option>
+                              {expressionForms.map((form) => (
+                                <option key={form.id} value={form.id}>
+                                  {form.name} ({form.id})
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          {shot.expressionFormId && (
+                            <div className="expression-warning">
+                              ⚠ 本镜头使用颜艺形态：{
+                                expressionForms.find((form) => form.id === shot.expressionFormId)?.name ||
+                                shot.expressionFormId
+                              }（建议直接生图）
+                            </div>
+                          )}
                         </>
                       ) : (
                         <div className="resource-folder">

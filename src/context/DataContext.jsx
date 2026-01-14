@@ -140,14 +140,80 @@ export const DataProvider = ({ children }) => {
 
   const ensurePlaceholderResources = (missing) => {
     missing.forEach((item) => {
-      upsertResource(item.type, {
+      const basePayload = {
         name: item.name,
         description: item.description || '占位资源，待补齐',
         isAvailable: false,
         status: '待补齐',
         images: []
+      };
+      const typePayloads = {
+        characters: {
+          meta: {
+            persona: '待补齐：角色性格与人设推理',
+            appearance: '待补齐：外貌特征（发型/服饰/标识）',
+            reference: '待补齐：参考人物/原型',
+            relationships: '待补齐：人际关系推理',
+            expressionUnlock: '待补齐：表情解锁规则'
+          },
+          aliases: [],
+          priorityPin: false,
+          form: [],
+          action: [],
+          assets: []
+        },
+        scenes: {
+          meta: {
+            sceneSettings: {
+              time: '',
+              weather: '',
+              season: '',
+              style: ''
+            },
+            sceneLayout: {
+              elements: []
+            },
+            sceneNotes: '待补齐：场景搭建元素、镜头参考、材质说明'
+          }
+        },
+        expressions: {
+          meta: {
+            emotionType: '',
+            emotionValue: '',
+            background: '',
+            templateSuggestion: '待补齐：填写参考动漫/角色/表情描述，用于图生图复刻',
+            expressionGrouping: 'group',
+            category: '自定义',
+            scope: 'universal',
+            riskLevel: 'mid',
+            strategy: '',
+            templateAnime: '',
+            templateCharacter: '',
+            templateExpression: '',
+            shotRecommendation: ['closeup', 'medium'],
+            prohibitions: '',
+            expressionAssets: [],
+            expressionRules: [],
+            expressionHistory: []
+          }
+        }
+      };
+      upsertResource(item.type, {
+        ...basePayload,
+        ...(typePayloads[item.type] || {})
       });
     });
+  };
+
+
+  const deleteResource = (type, resourceId) => {
+    setData((prev) => ({
+      ...prev,
+      resources: {
+        ...prev.resources,
+        [type]: (prev.resources[type] || []).filter((r) => r.id !== resourceId)
+      }
+    }));
   };
 
   const updateResourceImages = (type, resourceId, images) => {
@@ -178,6 +244,7 @@ export const DataProvider = ({ children }) => {
     upsertResource,
     ensurePlaceholderResources,
     updateResourceImages,
+    deleteResource,
     upsertRule,
     deleteRule,
     importRules

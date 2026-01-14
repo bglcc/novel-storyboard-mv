@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 
 const tabs = [
@@ -13,8 +13,9 @@ const tabs = [
 ];
 
 const ResourceLibrary = () => {
-  const { data } = useData();
+  const { data, deleteResource, upsertResource } = useData();
   const location = useLocation();
+  const navigate = useNavigate();
   const queryTab = new URLSearchParams(location.search).get('tab');
   const showMissing = new URLSearchParams(location.search).get('show') === 'missing';
   const validTabs = useMemo(() => tabs.map((t) => t.key), []);
@@ -34,10 +35,79 @@ const ResourceLibrary = () => {
     return missingOk && byTag;
   });
 
+  const createResourceId = () =>
+    typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+
+  const handleCreateExpression = () => {
+    const now = Date.now();
+    const id = createResourceId();
+    upsertResource('expressions', {
+      id,
+      name: '新建表情',
+      description: '',
+      tags: [],
+      isAvailable: false,
+      status: '待补齐',
+      images: [],
+      meta: {
+        emotionType: '',
+        emotionValue: '',
+        background: '',
+        expressionGrouping: 'group',
+        category: '自定义',
+        scope: 'universal',
+        riskLevel: 'mid',
+        strategy: '',
+        templateAnime: '',
+        templateCharacter: '',
+        templateExpression: '',
+        shotRecommendation: ['closeup', 'medium'],
+        prohibitions: '',
+        expressionAssets: [],
+        expressionRules: []
+      },
+      createdAt: now,
+      updatedAt: now
+    });
+    navigate(`/resources/expressions/${id}`);
+  };
+
+  const getLatestAsset = (res) => {
+    const assets = res.assets || [];
+    if (!assets.length) return null;
+    return assets
+      .slice()
+      .sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0))[0];
+  };
+
+  const resolveCoverImage = (res) => {
+    if (activeTab === 'characters') {
+      return getLatestAsset(res)?.src || res.meta?.viewImages?.front || res.images?.[0];
+    }
+    return res.images?.[0];
+  };
+
+  const getCharacterStatus = (res) => {
+    const assets = res.assets || [];
+    if (!assets.length) return '待完成';
+    const hasForms = Array.isArray(res.form) && res.form.length > 0;
+    const hasActions = Array.isArray(res.action) && res.action.length > 0;
+    if (!hasForms || !hasActions) return '部分完成';
+    return '已完成';
+  };
+
+  const handleDelete = (resourceId) => {
+    if (!window.confirm('确认删除该资源？')) return;
+    deleteResource(activeTab, resourceId);
+  };
+
   return (
     <div className="card">
       <h2>资源库</h2>
       <p className="muted">支持上传透明 PNG、JPG、WebP，并可用于分镜图缺失资源补齐。</p>
+      <div className="resource-entry">
+        <span className="muted">颜艺形态已并入表情资源库，请在“表情”标签页管理。</span>
+      </div>
       <div className="row">
         <input
           placeholder="按标签筛选，逗号分隔"
@@ -46,6 +116,19 @@ const ResourceLibrary = () => {
         />
         <span className="muted">自动提取首张图片为封面，缺少则显示占位图。</span>
       </div>
+      {activeTab === 'expressions' && (
+        <div className="row">
+          <button type="button" onClick={handleCreateExpression}>
+            新增表情
+          </button>
+          {showMissing && (
+            <button type="button" className="ghost-button" onClick={() => navigate('/resources?tab=expressions')}>
+              查看全部表情
+            </button>
+          )}
+          <span className="muted">表情资源用于统一管理颜艺形态与生成规则。</span>
+        </div>
+      )}
       <div className="tabs">
         {tabs.map((tab) => (
           <button
@@ -59,27 +142,57 @@ const ResourceLibrary = () => {
       </div>
       <div className="grid">
         {resources.map((res) => {
-          const hasCover = Boolean(res.images && res.images[0]);
-          const statusText = res.status || (res.isAvailable ? '已完成' : '待补齐');
+          const coverImage = resolveCoverImage(res);
+          const hasCover = Boolean(coverImage);
+          const statusText =
+            activeTab === 'characters'
+              ? getCharacterStatus(res)
+              : res.status || (res.isAvailable ? '已完成' : '待补齐');
+          const mainForm = res.form?.[0]?.name || '未设置';
           return (
             <div key={res.id} className="item-card">
               <div className="cover-wrap">
                 {hasCover ? (
-                  <img src={res.images[0]} alt="封面" className="cover" />
+                  <img src={coverImage} alt="封面" className="cover" />
                 ) : (
-                  <div className="placeholder">无封面</div>
+                  <div className="placeholder">待完成</div>
                 )}
                 {!hasCover && <span className="badge warning">待完成</span>}
+                <span
+                  className={`badge status ${statusText === '已完成' ? 'success' : 'warning'}`}
+                >
+                  {statusText}
+                </span>
               </div>
               <h4>{res.name}</h4>
-              <p>状态：{statusText}</p>
+              {activeTab === 'characters' && (
+                <p className="muted">形态：{mainForm}</p>
+              )}
               <p className="muted">{res.description || '暂无描述'}</p>
               {(res.tags || []).length > 0 && (
                 <p className="muted">标签：{(res.tags || []).join('，')}</p>
               )}
-              <Link to={`/resources/${activeTab}/${res.id}`} className="primary-link">
-                查看详情
-              </Link>
+              {activeTab === 'characters' ? (
+                <div className="row card-actions">
+                  <button type="button" onClick={() => navigate(`/resources/${activeTab}/${res.id}`)}>
+                    编辑角色
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => navigate(`/resources/${activeTab}/${res.id}`)}
+                  >
+                    上传资源
+                  </button>
+                  <button type="button" className="danger" onClick={() => handleDelete(res.id)}>
+                    删除角色
+                  </button>
+                </div>
+              ) : (
+                <Link to={`/resources/${activeTab}/${res.id}`} className="primary-link">
+                  查看详情
+                </Link>
+              )}
             </div>
           );
         })}
