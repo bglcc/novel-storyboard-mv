@@ -9,7 +9,6 @@ const Layout = ({ children }) => {
         <nav>
           <Link to="/">首页</Link>
           <Link to="/resources">资源库</Link>
-          <Link to="/expression-forms">颜艺形态库</Link>
           <Link to="/rules">规则库</Link>
         </nav>
       </header>

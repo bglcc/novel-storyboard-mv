@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 
 const tabs = [
@@ -13,7 +13,7 @@ const tabs = [
 ];
 
 const ResourceLibrary = () => {
-  const { data, deleteResource, upsertResource } = useData();
+  const { data, deleteResource } = useData();
   const location = useLocation();
   const navigate = useNavigate();
   const queryTab = new URLSearchParams(location.search).get('tab');
@@ -34,43 +34,6 @@ const ResourceLibrary = () => {
     const byTag = tagFilter ? tags.includes(tagFilter.toLowerCase()) : true;
     return missingOk && byTag;
   });
-
-  const createResourceId = () =>
-    typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-
-  const handleCreateExpression = () => {
-    const now = Date.now();
-    const id = createResourceId();
-    upsertResource('expressions', {
-      id,
-      name: '新建表情',
-      description: '',
-      tags: [],
-      isAvailable: false,
-      status: '待补齐',
-      images: [],
-      meta: {
-        emotionType: '',
-        emotionValue: '',
-        background: '',
-        expressionGrouping: 'group',
-        category: '自定义',
-        scope: 'universal',
-        riskLevel: 'mid',
-        strategy: '',
-        templateAnime: '',
-        templateCharacter: '',
-        templateExpression: '',
-        shotRecommendation: ['closeup', 'medium'],
-        prohibitions: '',
-        expressionAssets: [],
-        expressionRules: []
-      },
-      createdAt: now,
-      updatedAt: now
-    });
-    navigate(`/resources/expressions/${id}`);
-  };
 
   const getLatestAsset = (res) => {
     const assets = res.assets || [];
@@ -101,6 +64,14 @@ const ResourceLibrary = () => {
     deleteResource(activeTab, resourceId);
   };
 
+  const hasMissingByTab = useMemo(() => {
+    const entries = Object.entries(data.resources || {});
+    return entries.reduce((acc, [key, list]) => {
+      acc[key] = (list || []).some((res) => res.status === '待补齐' || res.isAvailable === false);
+      return acc;
+    }, {});
+  }, [data.resources]);
+
   return (
     <div className="card">
       <h2>资源库</h2>
@@ -118,9 +89,6 @@ const ResourceLibrary = () => {
       </div>
       {activeTab === 'expressions' && (
         <div className="row">
-          <button type="button" onClick={handleCreateExpression}>
-            新增表情
-          </button>
           {showMissing && (
             <button type="button" className="ghost-button" onClick={() => navigate('/resources?tab=expressions')}>
               查看全部表情
@@ -137,10 +105,11 @@ const ResourceLibrary = () => {
             onClick={() => setActiveTab(tab.key)}
           >
             {tab.label}
+            {hasMissingByTab[tab.key] && <span className="tab-dot" />}
           </button>
         ))}
       </div>
-      <div className="grid">
+      <div className="grid fixed-four">
         {resources.map((res) => {
           const coverImage = resolveCoverImage(res);
           const hasCover = Boolean(coverImage);
@@ -148,7 +117,6 @@ const ResourceLibrary = () => {
             activeTab === 'characters'
               ? getCharacterStatus(res)
               : res.status || (res.isAvailable ? '已完成' : '待补齐');
-          const mainForm = res.form?.[0]?.name || '未设置';
           return (
             <div key={res.id} className="item-card">
               <div className="cover-wrap">
@@ -165,34 +133,18 @@ const ResourceLibrary = () => {
                 </span>
               </div>
               <h4>{res.name}</h4>
-              {activeTab === 'characters' && (
-                <p className="muted">形态：{mainForm}</p>
-              )}
               <p className="muted">{res.description || '暂无描述'}</p>
               {(res.tags || []).length > 0 && (
                 <p className="muted">标签：{(res.tags || []).join('，')}</p>
               )}
-              {activeTab === 'characters' ? (
-                <div className="row card-actions">
-                  <button type="button" onClick={() => navigate(`/resources/${activeTab}/${res.id}`)}>
-                    编辑角色
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={() => navigate(`/resources/${activeTab}/${res.id}`)}
-                  >
-                    上传资源
-                  </button>
-                  <button type="button" className="danger" onClick={() => handleDelete(res.id)}>
-                    删除角色
-                  </button>
-                </div>
-              ) : (
-                <Link to={`/resources/${activeTab}/${res.id}`} className="primary-link">
-                  查看详情
-                </Link>
-              )}
+              <div className="row card-actions">
+                <button type="button" onClick={() => navigate(`/resources/${activeTab}/${res.id}`)}>
+                  编辑
+                </button>
+                <button type="button" className="danger" onClick={() => handleDelete(res.id)}>
+                  删除
+                </button>
+              </div>
             </div>
           );
         })}
