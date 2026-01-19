@@ -224,7 +224,7 @@ const ResourceDetail = () => {
             {
               id: 'string，需求卡片 ID。',
               name: 'string，需求名称。',
-              character: 'string，角色称。',
+              character: 'string，角色名称。',
               cover: 'string，可选，封面图 base64。'
             }
           ]
@@ -1914,7 +1914,7 @@ const ResourceDetail = () => {
                     <div className="scene-preview-header">结构图展示</div>
                     <div className="scene-canvas scene-canvas-grid">
                       {sceneLayout.elements.length === 0 && (
-                        <div className="empty">暂无结构图元素，等待分镜头AI回传。</div>
+                        <div className="empty">暂无结构图元素，等待分镜AI回传。</div>
                       )}
                       {sceneLayout.elements.map((element) => {
                         const left = `${(element.x || 0) * 100}%`;
@@ -2364,10 +2364,10 @@ const ResourceDetail = () => {
                     </div>
                     <div className="row">
                       <button type="button" onClick={handleExpressionExportZip} disabled={loading}>
-                        导出表情资源包
+                        导出单个表情 ZIP
                       </button>
                       <label className="file-button">
-                        表情规则库-表情-导入/导出-对应角色-上传
+                        导入表情 ZIP
                         <input type="file" accept="application/zip" onChange={handleExpressionImportZip} />
                       </label>
                     </div>
