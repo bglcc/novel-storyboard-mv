@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import JSZip from 'jszip';
 import { useData } from '../context/DataContext';
+import '../styles/resource-enhancements.css';
 
 const typeLabels = {
   characters: '角色',
@@ -113,7 +114,9 @@ const ResourceDetail = () => {
             name: 'string，角色名称。',
             tags: 'string[]，角色标签数组。',
             background: 'string，角色背景描述，默认映射为基础信息展示内容。',
-            priorityPin: 'boolean，是否置顶角色。'
+            priorityPin: 'boolean，是否置顶角色。',
+            personalitySetting: 'string，性格设定（心理特征、动机、恐惧点等）。',
+            growthTrajectory: 'string，成长轨迹描述（变化与转折点）。'
           },
           formInfo: {
             formName: 'string，形态名称；当需要新增形态时需提供。',
@@ -128,7 +131,11 @@ const ResourceDetail = () => {
           },
           relationshipGraph: {
             nodes: 'array，其他角色节点（id/name）。',
-            relations: 'array，中心角色与目标角色的双向关系与情感。'
+            relations:
+              'array，中心角色与目标角色关系。字段示例：source/target/relation/emotions/currentEmotion/cause/consequence。'
+          },
+          characterGrowthHistory: {
+            entries: 'array，角色成长史节点（chapter/change/description）。'
           }
         },
         imageRules: {
@@ -217,7 +224,7 @@ const ResourceDetail = () => {
             {
               id: 'string，需求卡片 ID。',
               name: 'string，需求名称。',
-              character: 'string，角色名称。',
+              character: 'string，角色称。',
               cover: 'string，可选，封面图 base64。'
             }
           ]
@@ -1058,6 +1065,14 @@ const ResourceDetail = () => {
   const sceneElementDetails = meta.sceneElementDetails || [];
   const sceneVariants = meta.sceneVariants || [];
   const relationGraph = meta.relationshipGraph || { nodes: [], relations: [] };
+  const growthHistory = meta.characterGrowthHistory || [];
+  const relationNodes = relationGraph.nodes || [];
+  const relationPositions = relationNodes.map((node, index) => {
+    const angle = (index / relationNodes.length) * Math.PI * 2;
+    const x = 50 + 38 * Math.cos(angle);
+    const y = 50 + 38 * Math.sin(angle);
+    return { ...node, position: { x, y }, key: node.id || node.name || `node-${index}` };
+  });
   const expressionPreviewCharacter = data.resources.characters?.[0];
   const expressionPreviewImage = resolveReferenceImage(
     expressionPreviewCharacter,
@@ -1115,6 +1130,40 @@ const ResourceDetail = () => {
     const link = document.createElement('a');
     link.href = url;
     link.download = `${resource.name || 'character'}-relationship.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleGrowthHistoryImport = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const cleaned = text.replace(/^\uFEFF/, '').trim();
+      if (!cleaned) {
+        alert('成长史 JSON 为空');
+        return;
+      }
+      let parsed = JSON.parse(cleaned);
+      if (typeof parsed === 'string') {
+        parsed = JSON.parse(parsed);
+      }
+      const entries = Array.isArray(parsed) ? parsed : parsed.characterGrowthHistory || [];
+      setMeta((prev) => ({ ...prev, characterGrowthHistory: entries }));
+    } catch (e) {
+      alert('成长史 JSON 解析失败');
+    }
+  };
+
+  const handleGrowthHistoryExport = () => {
+    const payload = {
+      characterGrowthHistory: growthHistory
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${resource.name || 'character'}-growth-history.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -1264,7 +1313,24 @@ const ResourceDetail = () => {
     URL.revokeObjectURL(url);
   };
 
-  const getRelationByTarget = (targetId) => relationGraph.relations?.find((rel) => rel.targetId === targetId);
+  const getRelationByTarget = (node) => {
+    const relations = relationGraph.relations || [];
+    const centerKeys = [resource.id, resource.name].filter(Boolean).map((value) => String(value).toLowerCase());
+    const nodeKeys = [node?.id, node?.name].filter(Boolean).map((value) => String(value).toLowerCase());
+    const matches = (value, keys) => value && keys.includes(String(value).toLowerCase());
+    return relations.find((rel) => {
+      if (rel.targetId) {
+        return rel.targetId === node?.id || rel.targetId === node?.name;
+      }
+      const source = rel.source ?? rel.sourceId ?? rel.from ?? rel.fromId ?? rel.sourceName;
+      const target = rel.target ?? rel.targetId ?? rel.to ?? rel.toId ?? rel.targetName;
+      const isSourceCenter = matches(source, centerKeys);
+      const isTargetCenter = matches(target, centerKeys);
+      const isSourceNode = matches(source, nodeKeys);
+      const isTargetNode = matches(target, nodeKeys);
+      return (isSourceCenter && isTargetNode) || (isTargetCenter && isSourceNode);
+    });
+  };
 
   const renderCharacterDetail = () => (
     <div className="character-detail">
@@ -1283,7 +1349,8 @@ const ResourceDetail = () => {
         {[
           { key: 'base', label: '基础信息' },
           { key: 'appearance', label: '形象管理' },
-          { key: 'relations', label: '关系网' }
+          { key: 'relations', label: '关系网' },
+          { key: 'growth', label: '角色成长史' }
         ].map((tab) => (
           <button
             key={tab.key}
@@ -1318,6 +1385,14 @@ const ResourceDetail = () => {
               <div className="span-2">
                 <div className="label">角色背景描述</div>
                 <div className="readonly-field">{resolveFormValue('persona') || '未填写'}</div>
+              </div>
+              <div className="span-2">
+                <div className="label">性格设定</div>
+                <div className="readonly-field multi-line">{meta.personalitySetting || '未填写'}</div>
+              </div>
+              <div className="span-2">
+                <div className="label">成长轨迹</div>
+                <div className="readonly-field multi-line">{meta.growthTrajectory || '未填写'}</div>
               </div>
               <div>
                 <div className="label">置顶角色</div>
@@ -1466,24 +1541,30 @@ const ResourceDetail = () => {
             </div>
           </div>
           <div className="relation-board">
-            {relationGraph.nodes?.length ? (
+            {relationNodes.length ? (
               <div className="relation-network">
-                {relationGraph.nodes.map((node, index) => {
-                  const angle = (index / relationGraph.nodes.length) * Math.PI * 2;
-                  const x = 50 + 38 * Math.cos(angle);
-                  const y = 50 + 38 * Math.sin(angle);
-                  return (
-                    <button
-                      key={node.id}
-                      type="button"
-                      className="relation-node"
-                      style={{ left: `${x}%`, top: `${y}%` }}
-                      onClick={() => setFocusedRelation(node)}
-                    >
-                      {node.name}
-                    </button>
-                  );
-                })}
+                <svg className="relation-lines" viewBox="0 0 100 100" preserveAspectRatio="none">
+                  {relationPositions.map((node) => (
+                    <line
+                      key={`line-${node.key}`}
+                      x1="50"
+                      y1="50"
+                      x2={node.position.x}
+                      y2={node.position.y}
+                    />
+                  ))}
+                </svg>
+                {relationPositions.map((node) => (
+                  <button
+                    key={node.key}
+                    type="button"
+                    className="relation-node"
+                    style={{ left: `${node.position.x}%`, top: `${node.position.y}%` }}
+                    onClick={() => setFocusedRelation(node)}
+                  >
+                    {node.name}
+                  </button>
+                ))}
                 <div className="relation-center">{resource.name}</div>
               </div>
             ) : (
@@ -1493,34 +1574,63 @@ const ResourceDetail = () => {
           {focusedRelation && (
             <div className="relation-focus">
               <div className="relation-focus-node">{focusedRelation.name}</div>
-              <div className="relation-focus-arrows">
-                <div className="relation-arrow">
-                  <div className="arrow-line">↓</div>
-                  <div className="arrow-content">
-                    <div className="label">{resource.name} → {focusedRelation.name}</div>
-                    <div className="muted">{getRelationByTarget(focusedRelation.id)?.fromCenter?.relation || '关系待补充'}</div>
-                    {(getRelationByTarget(focusedRelation.id)?.fromCenter?.emotions || []).map((emotion, idx) => (
+              {(() => {
+                const relationDetail = getRelationByTarget(focusedRelation);
+                return (
+                  <div className="relation-focus-card">
+                    <div className="label">
+                      {resource.name} ⇄ {focusedRelation.name}
+                    </div>
+                    <div className="muted">{relationDetail?.relation || '关系待补充'}</div>
+                    {(relationDetail?.emotions || []).map((emotion, idx) => (
                       <div key={idx} className="muted">
                         {emotion.label}：{emotion.value}
                       </div>
                     ))}
+                    {relationDetail?.currentEmotion && (
+                      <div className="muted">当下情绪：{relationDetail.currentEmotion}</div>
+                    )}
+                    {relationDetail?.cause && (
+                      <div className="muted">前因：{relationDetail.cause}</div>
+                    )}
+                    {relationDetail?.consequence && (
+                      <div className="muted">后果：{relationDetail.consequence}</div>
+                    )}
                   </div>
-                </div>
-                <div className="relation-arrow">
-                  <div className="arrow-line">↑</div>
-                  <div className="arrow-content">
-                    <div className="label">{focusedRelation.name} → {resource.name}</div>
-                    <div className="muted">{getRelationByTarget(focusedRelation.id)?.toCenter?.relation || '关系待补充'}</div>
-                    {(getRelationByTarget(focusedRelation.id)?.toCenter?.emotions || []).map((emotion, idx) => (
-                      <div key={idx} className="muted">
-                        {emotion.label}：{emotion.value}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
+                );
+              })()}
               <div className="relation-focus-node">{resource.name}</div>
             </div>
+          )}
+        </div>
+      )}
+
+      {characterTab === 'growth' && (
+        <div className="card section-card">
+          <div className="section-header">
+            <h3>角色成长史</h3>
+            <div className="resource-header-actions">
+              <button type="button" className="ghost-button" onClick={handleGrowthHistoryExport}>
+                导出成长史
+              </button>
+              <label className="file-button">
+                导入成长史
+                <input type="file" accept="application/json" onChange={handleGrowthHistoryImport} />
+              </label>
+            </div>
+          </div>
+          {growthHistory.length ? (
+            <div className="growth-history-list">
+              {growthHistory.map((entry, index) => (
+                <div key={`${entry.chapter || 'chapter'}-${index}`} className="growth-history-card">
+                  <div className="label">{entry.chapter || '未标注章节'}</div>
+                  <div className="growth-history-change">{entry.change || '变化待补充'}</div>
+                  <div className="muted">{entry.description || '暂无描述'}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty">暂无成长史数据，可导入 JSON 进行展示。</div>
           )}
         </div>
       )}
@@ -1546,6 +1656,22 @@ const ResourceDetail = () => {
                   <textarea
                     value={resolveFormValue('persona')}
                     onChange={(e) => updateFormValue('persona', e.target.value)}
+                    className="large-input"
+                  />
+                </label>
+                <label className="span-2">
+                  性格设定
+                  <textarea
+                    value={meta.personalitySetting || ''}
+                    onChange={(e) => setMeta((prev) => ({ ...prev, personalitySetting: e.target.value }))}
+                    className="large-input"
+                  />
+                </label>
+                <label className="span-2">
+                  成长轨迹
+                  <textarea
+                    value={meta.growthTrajectory || ''}
+                    onChange={(e) => setMeta((prev) => ({ ...prev, growthTrajectory: e.target.value }))}
                     className="large-input"
                   />
                 </label>
@@ -2238,10 +2364,10 @@ const ResourceDetail = () => {
                     </div>
                     <div className="row">
                       <button type="button" onClick={handleExpressionExportZip} disabled={loading}>
-                        导出单个表情 ZIP
+                        导出表情资源包
                       </button>
                       <label className="file-button">
-                        导入表情 ZIP
+                        表情规则库-表情-导入/导出-对应角色-上传
                         <input type="file" accept="application/zip" onChange={handleExpressionImportZip} />
                       </label>
                     </div>
@@ -2321,23 +2447,27 @@ const ResourceDetail = () => {
           )}
           {type !== 'characters' && type !== 'scenes' && type !== 'expressions' && (
             <div className="grid">
-              {(resource.images || []).map((img, idx) => (
-                <div key={idx} className="item-card">
-                  <img src={img} alt={`res-${idx}`} className="cover checkerboard" />
-                  <button
-                    className="danger"
-                    onClick={() =>
-                      updateResourceImages(
-                        type,
-                        resourceId,
-                        resource.images.filter((_, i) => i !== idx)
-                      )
-                    }
-                  >
-                    删除图片
-                  </button>
-                </div>
-              ))}
+              {(resource.images || []).map((img, idx) => {
+                const imageSrc = img?.src || img;
+                const imageKey = img?.id || imageSrc || idx;
+                return (
+                  <div key={imageKey} className="item-card">
+                    <img src={imageSrc} alt={`res-${idx}`} className="cover checkerboard" />
+                    <button
+                      className="danger"
+                      onClick={() =>
+                        updateResourceImages(
+                          type,
+                          resourceId,
+                          resource.images.filter((_, i) => i !== idx)
+                        )
+                      }
+                    >
+                      删除图片
+                    </button>
+                  </div>
+                );
+              })}
               {(resource.images || []).length === 0 && <div className="empty">暂无图片，上传 zip 或补充图片。</div>}
             </div>
           )}

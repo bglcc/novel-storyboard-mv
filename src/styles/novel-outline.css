@@ -1,0 +1,63 @@
+.outline-question-list {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.outline-question-card {
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  display: grid;
+  gap: 10px;
+}
+
+.outline-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.outline-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.outline-other,
+.outline-pending {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: #475569;
+}
+
+.prompt-layout {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 16px;
+}
+
+.prompt-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.prompt-summary {
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  display: grid;
+  gap: 10px;
+}
+
+.prompt-summary-item {
+  display: grid;
+  gap: 4px;
+}

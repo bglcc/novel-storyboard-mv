@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useData } from '../context/DataContext';
+import '../styles/novel-outline.css';
 
 const statusColors = {
   仅录入: 'gray',
@@ -8,15 +9,156 @@ const statusColors = {
   已完成: 'green'
 };
 
+const outlineQuestions = [
+  {
+    id: 'theme',
+    title: '故事的核心主题是什么？',
+    options: ['成长', '复仇', '爱情', '战争', '冒险', '发现自我'],
+    otherLabel: '其他（请简述）',
+    pending: '待议：如果有特殊的主题要求，AI 可以提供建议，是否需要更深层的主题或多重主题的结合？'
+  },
+  {
+    id: 'setting',
+    title: '故事的背景设定属于哪种类型？',
+    options: ['现代', '架空历史', '科幻', '玄幻', '奇幻', '现实主义'],
+    otherLabel: '其他（请简述）',
+    pending: '待议：AI 可以提供背景设定的创意建议，是否需要融合多个元素？'
+  },
+  {
+    id: 'conflict',
+    title: '故事的主要冲突类型是什么？',
+    options: ['人与人之间的冲突', '人与社会的冲突', '人与自然的冲突', '人与内心的冲突', '人与技术的冲突'],
+    otherLabel: '其他（请简述）',
+    pending: '待议：是否考虑内心的深层冲突和外部冲突的双重拉扯？'
+  },
+  {
+    id: 'protagonist',
+    title: '主角的性格特征是什么？',
+    options: ['英勇 / 勇敢', '智慧 / 理性', '忍耐 / 坚韧', '幽默 / 机智', '叛逆 / 自由', '矛盾 / 内心冲突'],
+    otherLabel: '其他（请简述）',
+    pending: '待议：是否考虑加入角色的缺点或者成长曲线？'
+  },
+  {
+    id: 'antagonist',
+    title: '主要反派或对立力量是什么？',
+    options: ['个人反派（如邪恶领主）', '社会结构（如不公正的制度）', '自然灾害或外星生物', '内心的恐惧或缺陷'],
+    otherLabel: '其他（请简述）',
+    pending: '待议：反派是否仅限于一个角色，还是由多重力量组成？'
+  },
+  {
+    id: 'tone',
+    title: '故事的情感基调是什么？',
+    options: ['喜剧', '悲剧', '悬疑 / 惊悚', '戏剧性 / 转折', '温情 / 治愈', '紧张 / 压迫感'],
+    otherLabel: '其他（请简述）',
+    pending: '待议：是否考虑情感基调的转换？比如故事从紧张转为温情等？'
+  },
+  {
+    id: 'pov',
+    title: '故事的叙述视角是什么？',
+    options: ['第一人称', '第三人称', '全知视角', '非线性叙事'],
+    otherLabel: '其他（请简述）',
+    pending: '待议：是否需要多重视角叙事来增强故事层次感？'
+  },
+  {
+    id: 'timeline',
+    title: '故事的时间线如何设置？',
+    options: ['线性时间，按事件发生顺序推进', '倒叙或回忆', '时间碎片化（跳跃式展开）'],
+    otherLabel: '其他（请简述）',
+    pending: '待议：时间线的跳跃是否影响故事的连贯性？是否需要 AI 提供多种时间线排列的建议？'
+  },
+  {
+    id: 'goal',
+    title: '主角的目标是什么？',
+    options: ['追求爱情', '实现个人复仇', '战胜恶势力', '保护家园', '寻找失落的宝藏', '探索未知领域'],
+    otherLabel: '其他（请简述）',
+    pending: '待议：是否考虑主角目标的多重性或变动性？'
+  },
+  {
+    id: 'ending',
+    title: '故事的结局会是怎样的？',
+    options: ['快乐结局（主角成功或满足）', '悲伤结局（主角牺牲或失败）', '开放结局（没有明确的答案）', '中性结局（没有明确的胜负，更多的是过程）'],
+    otherLabel: '其他（请简述）',
+    pending: '待议：结局是否需要对故事中的矛盾点做进一步的回应或解答？'
+  }
+];
+
+const outlinePlaceholderMap = {
+  theme: '选择的主题',
+  setting: '选择的背景设定',
+  conflict: '选择的冲突类型',
+  protagonist: '选择的性格特征',
+  antagonist: '选择的反派或对立力量',
+  tone: '选择的情感基调',
+  pov: '选择的叙述视角',
+  timeline: '选择的时间线设置',
+  goal: '选择的目标',
+  ending: '选择的结局'
+};
+
+const buildInitialSelections = () =>
+  outlineQuestions.reduce(
+    (acc, question) => ({
+      ...acc,
+      [question.id]: {
+        selected: [],
+        other: '',
+        pending: false
+      }
+    }),
+    {}
+  );
+
+const defaultOutlinePromptTemplate =
+  '你是一个专业的故事创作者，本故事的核心主题是：[选择的主题]，故事发生在：[选择的背景设定]。故事的主要冲突是：[选择的冲突类型]，而主角性格为：[选择的性格特征]。故事中的主要反派是：[选择的反派或对立力量]，故事情感基调为：[选择的情感基调]。本故事使[选择的叙述视角]视角进行叙述，时间线采用[选择的时间线设置]。主角的目标是：[选择的目标]，故事将以[选择的结局]结尾。';
+
 const NovelDetail = () => {
   const { novelId } = useParams();
   const navigate = useNavigate();
-  const { data, addChapter, updateChapter } = useData();
+  const { data, addChapter, updateChapter, updateNovel, upsertRule } = useData();
   const novel = data.novels.find((n) => n.id === novelId);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editModal, setEditModal] = useState(null);
+  const [outlineModalOpen, setOutlineModalOpen] = useState(false);
+  const [promptModalOpen, setPromptModalOpen] = useState(false);
+  const [outlineViewOpen, setOutlineViewOpen] = useState(false);
+  const [outlineEditMode, setOutlineEditMode] = useState(false);
+  const [outlineSelections, setOutlineSelections] = useState(buildInitialSelections);
+  const [outlineSummary, setOutlineSummary] = useState([]);
+  const [outlinePromptDraft, setOutlinePromptDraft] = useState(novel?.outlinePrompt || '');
+  const [outlineDraft, setOutlineDraft] = useState(novel?.outlineText || '');
+  const outlineRule = useMemo(
+    () => (data.rules || []).find((rule) => rule.tool === '生成小说-大纲提示词'),
+    [data.rules]
+  );
+  const promptTemplate = outlineRule?.promptTemplate || defaultOutlinePromptTemplate;
+
+  useEffect(() => {
+    if (!novel) return;
+    setOutlinePromptDraft(novel.outlinePrompt || '');
+    setOutlineDraft(novel.outlineText || '');
+  }, [novel]);
+
+  useEffect(() => {
+    const existing = (data.rules || []).some((rule) => rule.tool === '生成小说-大纲提示词');
+    if (existing) return;
+    upsertRule({
+      tool: '生成小说-大纲提示词',
+      description: '生成小说大纲提示词模板与选项规范。',
+      promptTemplate: defaultOutlinePromptTemplate,
+      parameters: {
+        overview: '用于生成小说大纲提示词的模板与选项集。',
+        questions: outlineQuestions.map((question) => ({
+          id: question.id,
+          title: question.title,
+          options: question.options,
+          otherLabel: question.otherLabel,
+          pending: question.pending
+        }))
+      }
+    });
+  }, [data.rules, upsertRule]);
 
   if (!novel) return <div className="card">未找到小说。</div>;
 
@@ -30,6 +172,105 @@ const NovelDetail = () => {
     if (newId) navigate(`/novel/${novelId}/chapter/${newId}`);
   };
 
+  const outlineStatus = novel.outlineText
+    ? '已上传'
+    : novel.outlinePrompt
+      ? '已生成'
+      : '未生成';
+
+  const handleToggleOption = (questionId, option) => {
+    setOutlineSelections((prev) => {
+      const current = prev[questionId];
+      const selected = current.selected.includes(option)
+        ? current.selected.filter((item) => item !== option)
+        : [...current.selected, option];
+      return { ...prev, [questionId]: { ...current, selected } };
+    });
+  };
+
+  const handleOtherChange = (questionId, value) => {
+    setOutlineSelections((prev) => ({
+      ...prev,
+      [questionId]: { ...prev[questionId], other: value }
+    }));
+  };
+
+  const handlePendingToggle = (questionId) => {
+    setOutlineSelections((prev) => ({
+      ...prev,
+      [questionId]: { ...prev[questionId], pending: !prev[questionId].pending }
+    }));
+  };
+
+  const buildAnswerText = (question) => {
+    const selection = outlineSelections[question.id];
+    const values = [...selection.selected];
+    if (selection.other.trim()) values.push(selection.other.trim());
+    if (selection.pending) values.push(question.pending);
+    return values.length ? values.join('、') : '未指定';
+  };
+
+  const handleGeneratePrompt = () => {
+    const summary = outlineQuestions.map((question) => ({
+      id: question.id,
+      title: question.title,
+      answer: buildAnswerText(question)
+    }));
+    setOutlineSummary(summary);
+    const replacements = summary.reduce((acc, item) => {
+      const placeholderKey = outlinePlaceholderMap[item.id];
+      if (!placeholderKey) return acc;
+      return { ...acc, [placeholderKey]: item.answer };
+    }, {});
+    let nextPrompt = promptTemplate;
+    Object.entries(replacements).forEach(([key, value]) => {
+      nextPrompt = nextPrompt.replaceAll(`[${key}]`, value);
+    });
+    setOutlinePromptDraft(nextPrompt);
+    setOutlineModalOpen(false);
+    setPromptModalOpen(true);
+  };
+
+  const handleSavePrompt = () => {
+    const now = new Date().toISOString();
+    updateNovel(novelId, {
+      outlinePrompt: outlinePromptDraft.trim(),
+      outlineGeneratedAt: now,
+      outlineStatus: outlinePromptDraft.trim() ? '已生成' : '未生成'
+    });
+    setPromptModalOpen(false);
+  };
+
+  const handleSaveOutline = () => {
+    const now = new Date().toISOString();
+    const nextVersions = [
+      ...(novel.outlineVersions || []),
+      {
+        version: (novel.outlineVersions || []).length + 1,
+        outlineText: outlineDraft.trim(),
+        updatedAt: now
+      }
+    ];
+    updateNovel(novelId, {
+      outlineText: outlineDraft.trim(),
+      outlineUpdatedAt: now,
+      outlineStatus: outlineDraft.trim() ? '已上传' : outlineStatus,
+      outlineVersions: nextVersions
+    });
+    setOutlineEditMode(false);
+    setOutlineViewOpen(false);
+  };
+
+  const handleCopyPrompt = async () => {
+    if (!outlinePromptDraft.trim()) return;
+    try {
+      await navigator.clipboard.writeText(outlinePromptDraft.trim());
+      alert('提示词已复制');
+    } catch (e) {
+      alert('复制失败，请手动复制');
+    }
+  };
+
   return (
     <div className="card">
       <div className="space-between">
@@ -39,6 +280,54 @@ const NovelDetail = () => {
         </div>
         <div className="row">
           <Link to="/" className="tab">返回书架</Link>
+          <button
+            type="button"
+            onClick={() => {
+              setOutlineSelections(buildInitialSelections());
+              setOutlineSummary([]);
+              setOutlineModalOpen(true);
+            }}
+          >
+            生成大纲
+          </button>
+          {outlineStatus === '已生成' && !novel.outlineText && (
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => {
+                setOutlinePromptDraft(novel.outlinePrompt || '');
+                setPromptModalOpen(true);
+              }}
+            >
+              复制关键词
+            </button>
+          )}
+          {!novel.outlineText && (
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => {
+                setOutlineDraft(novel.outlineText || '');
+                setOutlineViewOpen(true);
+                setOutlineEditMode(true);
+              }}
+            >
+              上传大纲
+            </button>
+          )}
+          {novel.outlineText && (
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => {
+                setOutlineDraft(novel.outlineText || '');
+                setOutlineViewOpen(true);
+                setOutlineEditMode(false);
+              }}
+            >
+              查看大纲
+            </button>
+          )}
           <button type="button" onClick={() => setModalOpen(true)}>+ 新建章节</button>
         </div>
       </div>
@@ -137,6 +426,145 @@ const NovelDetail = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {outlineModalOpen && (
+        <div className="modal">
+          <div className="modal-content large">
+            <h3>生成大纲 - 选择题</h3>
+            <div className="outline-question-list">
+              {outlineQuestions.map((question) => {
+                const selection = outlineSelections[question.id];
+                return (
+                  <div key={question.id} className="outline-question-card">
+                    <div className="label">{question.title}</div>
+                    <div className="outline-options">
+                      {question.options.map((option) => (
+                        <label key={option} className="outline-option">
+                          <input
+                            type="checkbox"
+                            checked={selection.selected.includes(option)}
+                            onChange={() => handleToggleOption(question.id, option)}
+                          />
+                          {option}
+                        </label>
+                      ))}
+                    </div>
+                    <label className="outline-other">
+                      {question.otherLabel}
+                      <input
+                        value={selection.other}
+                        onChange={(e) => handleOtherChange(question.id, e.target.value)}
+                        placeholder="请输入"
+                      />
+                    </label>
+                    <label className="outline-pending">
+                      <input
+                        type="checkbox"
+                        checked={selection.pending}
+                        onChange={() => handlePendingToggle(question.id)}
+                      />
+                      {question.pending}
+                    </label>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="row">
+              <button type="button" className="primary" onClick={handleGeneratePrompt}>
+                确认并生成提示词
+              </button>
+              <button type="button" className="tab" onClick={() => setOutlineModalOpen(false)}>
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {promptModalOpen && (
+        <div className="modal">
+          <div className="modal-content large">
+            <h3>大纲提示词</h3>
+            <div className="prompt-layout">
+              <div className="prompt-actions">
+                <button type="button" onClick={handleCopyPrompt}>
+                  一键复制
+                </button>
+                <button type="button" className="primary" onClick={handleSavePrompt}>
+                  保存
+                </button>
+                <button type="button" className="tab" onClick={() => setPromptModalOpen(false)}>
+                  关闭
+                </button>
+              </div>
+              <div className="prompt-content">
+                <textarea
+                  className="large-input"
+                  value={outlinePromptDraft}
+                  onChange={(e) => setOutlinePromptDraft(e.target.value)}
+                />
+                {outlineSummary.length > 0 && (
+                  <div className="prompt-summary">
+                    {outlineSummary.map((item) => (
+                      <div key={item.id} className="prompt-summary-item">
+                        <div className="label">{item.title}</div>
+                        <div className="muted">{item.answer}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {outlineViewOpen && (
+        <div className="modal">
+          <div className="modal-content large">
+            <div className="section-header">
+              <h3>小说大纲</h3>
+              <div className="resource-header-actions">
+                {!outlineEditMode && (
+                  <button type="button" className="ghost-button" onClick={() => setOutlineEditMode(true)}>
+                    修改
+                  </button>
+                )}
+                <button type="button" className="tab" onClick={() => setOutlineViewOpen(false)}>
+                  关闭
+                </button>
+              </div>
+            </div>
+            {outlineEditMode ? (
+              <div className="stack">
+                <textarea
+                  className="large-input"
+                  value={outlineDraft}
+                  onChange={(e) => setOutlineDraft(e.target.value)}
+                  placeholder="请输入小说大纲"
+                />
+                <div className="row">
+                  <button type="button" className="primary" onClick={handleSaveOutline}>
+                    保存
+                  </button>
+                  <button
+                    type="button"
+                    className="tab"
+                    onClick={() => {
+                      setOutlineDraft(novel.outlineText || '');
+                      setOutlineEditMode(false);
+                    }}
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="readonly-field multi-line">{outlineDraft || '暂无大纲'}</div>
+            )}
           </div>
         </div>
       )}

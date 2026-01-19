@@ -32,6 +32,12 @@ export const DataProvider = ({ children }) => {
           novels: (parsed.novels || []).map((novel) => ({
             ...novel,
             cover: novel.cover ?? '',
+            outlinePrompt: novel.outlinePrompt || '',
+            outlineText: novel.outlineText || '',
+            outlineGeneratedAt: novel.outlineGeneratedAt || null,
+            outlineUpdatedAt: novel.outlineUpdatedAt || null,
+            outlineStatus: novel.outlineStatus || '',
+            outlineVersions: novel.outlineVersions || [],
             chapters: (novel.chapters || []).map((chapter) => ({
               id: chapter.id,
               title: chapter.title,
@@ -54,13 +60,32 @@ export const DataProvider = ({ children }) => {
   }, [data]);
 
   const addNovel = (title, cover = '') => {
-    const newNovel = { id: uuidv4(), title, cover, createdAt: Date.now(), chapters: [] };
+    const newNovel = {
+      id: uuidv4(),
+      title,
+      cover,
+      createdAt: Date.now(),
+      chapters: [],
+      outlinePrompt: '',
+      outlineText: '',
+      outlineGeneratedAt: null,
+      outlineUpdatedAt: null,
+      outlineStatus: '未生成',
+      outlineVersions: []
+    };
     setData((prev) => ({ ...prev, novels: [...prev.novels, newNovel] }));
     return newNovel.id;
   };
 
   const deleteNovel = (id) => {
     setData((prev) => ({ ...prev, novels: prev.novels.filter((n) => n.id !== id) }));
+  };
+
+  const updateNovel = (novelId, updates) => {
+    setData((prev) => ({
+      ...prev,
+      novels: prev.novels.map((novel) => (novel.id === novelId ? { ...novel, ...updates } : novel))
+    }));
   };
 
   const addChapter = (novelId, title, content) => {
@@ -154,7 +179,10 @@ export const DataProvider = ({ children }) => {
             appearance: '待补齐：外貌特征（发型/服饰/标识）',
             reference: '待补齐：参考人物/原型',
             relationships: '待补齐：人际关系推理',
-            expressionUnlock: '待补齐：表情解锁规则'
+            expressionUnlock: '待补齐：表情解锁规则',
+            personalitySetting: '待补齐：性格设定',
+            growthTrajectory: '待补齐：成长轨迹',
+            characterGrowthHistory: []
           },
           aliases: [],
           priorityPin: false,
@@ -239,6 +267,7 @@ export const DataProvider = ({ children }) => {
     data,
     addNovel,
     deleteNovel,
+    updateNovel,
     addChapter,
     updateChapter,
     upsertResource,

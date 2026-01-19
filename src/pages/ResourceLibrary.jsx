@@ -1,157 +1,155 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import React, { useMemo, useState } from 'react';
 import { useData } from '../context/DataContext';
 
-const tabs = [
-  { key: 'characters', label: '角色' },
-  { key: 'expressions', label: '表情' },
-  { key: 'scenes', label: '场景' },
-  { key: 'props', label: '道具' },
-  { key: 'animations', label: '动画' },
-  { key: 'music', label: '背景音乐' },
-  { key: 'voiceovers', label: '角色配音' }
-];
+const emptyRule = () => ({
+  id: '',
+  tool: '',
+  description: '',
+  promptTemplate: '',
+  parameters: ''
+});
 
-const ResourceLibrary = () => {
-  const { data, deleteResource } = useData();
-  const location = useLocation();
-  const navigate = useNavigate();
-  const queryTab = new URLSearchParams(location.search).get('tab');
-  const showMissing = new URLSearchParams(location.search).get('show') === 'missing';
-  const validTabs = useMemo(() => tabs.map((t) => t.key), []);
-  const initialTab = validTabs.includes(queryTab) ? queryTab : 'characters';
-  const [activeTab, setActiveTab] = useState(initialTab);
-  const [tagFilter, setTagFilter] = useState('');
+const RuleLibrary = () => {
+  const { data, upsertRule, deleteRule, importRules } = useData();
+  const [draft, setDraft] = useState(emptyRule());
+  const [editingId, setEditingId] = useState('');
 
-  useEffect(() => {
-    const nextTab = validTabs.includes(queryTab) ? queryTab : 'characters';
-    setActiveTab(nextTab);
-  }, [queryTab, validTabs]);
+  const sortedRules = useMemo(
+    () => [...(data.rules || [])].sort((a, b) => a.tool.localeCompare(b.tool)),
+    [data.rules]
+  );
 
-  const resources = (data.resources?.[activeTab] || []).filter((res) => {
-    const missingOk = showMissing ? res.status === '待补齐' || res.isAvailable === false : true;
-    const tags = (res.tags || []).join(',').toLowerCase();
-    const byTag = tagFilter ? tags.includes(tagFilter.toLowerCase()) : true;
-    return missingOk && byTag;
-  });
-
-  const getLatestAsset = (res) => {
-    const assets = res.assets || [];
-    if (!assets.length) return null;
-    return assets
-      .slice()
-      .sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0))[0];
+  const handleSave = () => {
+    if (!draft.tool.trim()) return;
+    const payload = { ...normalizedDraft, id: editingId || draft.id };
+    upsertRule(payload);
+    setDraft(emptyRule());
+    setEditingId('');
   };
 
-  const resolveCoverImage = (res) => {
-    if (activeTab === 'characters') {
-      return getLatestAsset(res)?.src || res.meta?.viewImages?.front || res.images?.[0];
-    }
-    return res.images?.[0];
+  const handleEdit = (rule) => {
+    setEditingId(rule.id);
+    setDraft({ ...rule, parameters: JSON.stringify(rule.parameters || {}, null, 2) });
   };
 
-  const getCharacterStatus = (res) => {
-    const assets = res.assets || [];
-    if (!assets.length) return '待完成';
-    const hasForms = Array.isArray(res.form) && res.form.length > 0;
-    const hasActions = Array.isArray(res.action) && res.action.length > 0;
-    if (!hasForms || !hasActions) return '部分完成';
-    return '已完成';
+  const handleImport = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const input = event.target;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const parsed = JSON.parse(e.target.result);
+        importRules(parsed);
+      } catch (err) {
+        alert('规则文件解析失败，请确认 JSON 格式');
+      }
+    };
+    reader.readAsText(file);
+    input.value = '';
   };
 
-  const handleDelete = (resourceId) => {
-    if (!window.confirm('确认删除该资源？')) return;
-    deleteResource(activeTab, resourceId);
+  const handleExport = () => {
+    const blob = new Blob([JSON.stringify(data.rules || [], null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'rules.json';
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
-  const hasMissingByTab = useMemo(() => {
-    const entries = Object.entries(data.resources || {});
-    return entries.reduce((acc, [key, list]) => {
-      acc[key] = (list || []).some((res) => res.status === '待补齐' || res.isAvailable === false);
-      return acc;
-    }, {});
-  }, [data.resources]);
+  const handleParamChange = (value) => {
+    setDraft((prev) => ({ ...prev, parameters: value }));
+  };
+
+  const normalizedDraft = {
+    ...draft,
+    parameters: (() => {
+      try {
+        return draft.parameters ? JSON.parse(draft.parameters) : {};
+      } catch (err) {
+        return draft.parameters;
+      }
+    })()
+  };
 
   return (
     <div className="card">
-      <h2>资源库</h2>
-      <p className="muted">支持上传透明 PNG、JPG、WebP，并可用于分镜图缺失资源补齐。</p>
-      <div className="resource-entry">
-        <span className="muted">颜艺形态已并入表情资源库，请在“表情”标签页管理。</span>
+      <h2>规则库管理</h2>
+      <p className="muted">为不同 AI 工具（豆包、Sora2 等）维护提示词与参数，支持导入/导出 JSON。</p>
+      <div className="row">
+        <label>
+          工具名称
+          <input
+            value={draft.tool}
+            onChange={(e) => setDraft((prev) => ({ ...prev, tool: e.target.value }))}
+            placeholder="如：豆包、Sora2"
+          />
+        </label>
+        <label>
+          规则描述
+          <input
+            value={draft.description}
+            onChange={(e) => setDraft((prev) => ({ ...prev, description: e.target.value }))}
+            placeholder="用途、场景等"
+          />
+        </label>
       </div>
       <div className="row">
-        <input
-          placeholder="按标签筛选，逗号分隔"
-          value={tagFilter}
-          onChange={(e) => setTagFilter(e.target.value)}
-        />
-        <span className="muted">自动提取首张图片为封面，缺少则显示占位图。</span>
+        <label>
+          Prompt 模板
+          <textarea
+            className="large-input"
+            value={draft.promptTemplate}
+            onChange={(e) => setDraft((prev) => ({ ...prev, promptTemplate: e.target.value }))}
+            placeholder="支持占位符的提示词模板"
+          />
+        </label>
+        <label>
+          默认参数（JSON）
+          <textarea
+            className="large-input"
+            value={draft.parameters}
+            onChange={(e) => handleParamChange(e.target.value)}
+            placeholder='例如 {"resolution":"1080p"}'
+          />
+        </label>
       </div>
-      {activeTab === 'expressions' && (
-        <div className="row">
-          {showMissing && (
-            <button type="button" className="ghost-button" onClick={() => navigate('/resources?tab=expressions')}>
-              查看全部表情
-            </button>
-          )}
-          <span className="muted">表情资源用于统一管理颜艺形态与生成规则。</span>
-        </div>
-      )}
-      <div className="tabs">
-        {tabs.map((tab) => (
-          <button
-            key={tab.key}
-            className={tab.key === activeTab ? 'tab active' : 'tab'}
-            onClick={() => setActiveTab(tab.key)}
-          >
-            {tab.label}
-            {hasMissingByTab[tab.key] && <span className="tab-dot" />}
+      <div className="row">
+        <button type="button" onClick={handleSave}>
+          {editingId ? '更新规则' : '新增规则'}
+        </button>
+        <button type="button" onClick={handleExport}>导出规则 JSON</button>
+        <label className="primary-link" style={{ cursor: 'pointer' }}>
+          导入规则 JSON
+          <input type="file" accept="application/json" style={{ display: 'none' }} onChange={handleImport} />
+        </label>
+        {editingId && (
+          <button className="danger" onClick={() => { setDraft(emptyRule()); setEditingId(''); }}>
+            取消编辑
           </button>
-        ))}
+        )}
       </div>
-      <div className="grid fixed-four">
-        {resources.map((res) => {
-          const coverImage = resolveCoverImage(res);
-          const hasCover = Boolean(coverImage);
-          const statusText =
-            activeTab === 'characters'
-              ? getCharacterStatus(res)
-              : res.status || (res.isAvailable ? '已完成' : '待补齐');
-          return (
-            <div key={res.id} className="item-card">
-              <div className="cover-wrap">
-                {hasCover ? (
-                  <img src={coverImage} alt="封面" className="cover" />
-                ) : (
-                  <div className="placeholder">待完成</div>
-                )}
-                {!hasCover && <span className="badge warning">待完成</span>}
-                <span
-                  className={`badge status ${statusText === '已完成' ? 'success' : 'warning'}`}
-                >
-                  {statusText}
-                </span>
-              </div>
-              <h4>{res.name}</h4>
-              <p className="muted">{res.description || '暂无描述'}</p>
-              {(res.tags || []).length > 0 && (
-                <p className="muted">标签：{(res.tags || []).join('，')}</p>
-              )}
-              <div className="row card-actions">
-                <button type="button" onClick={() => navigate(`/resources/${activeTab}/${res.id}`)}>
-                  编辑
-                </button>
-                <button type="button" className="danger" onClick={() => handleDelete(res.id)}>
-                  删除
-                </button>
-              </div>
+
+      <div className="list">
+        {sortedRules.map((rule) => (
+          <div key={rule.id} className="list-item">
+            <div>
+              <div className="list-title">{rule.tool}</div>
+              <div className="muted">{rule.description || '暂无描述'}</div>
+              <div className="muted">参数：{JSON.stringify(rule.parameters || {})}</div>
             </div>
-          );
-        })}
-        {resources.length === 0 && <div className="empty">暂无资源，导入分镜后自动创建。</div>}
+            <div className="row">
+              <button onClick={() => handleEdit(rule)}>编辑</button>
+              <button className="danger" onClick={() => deleteRule(rule.id)}>删除</button>
+            </div>
+          </div>
+        ))}
+        {sortedRules.length === 0 && <div className="empty">尚未配置规则，添加一条吧。</div>}
       </div>
     </div>
   );
 };
 
-export default ResourceLibrary;
+export default RuleLibrary;
