@@ -9,6 +9,7 @@ import {
   getExpressionRules,
   upsertExpressionForm
 } from '../utils/expressionFormsDb';
+import '../styles/resource.css';
 
 const defaultCategories = [
   '情绪爆发类',

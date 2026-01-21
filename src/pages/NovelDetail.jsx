@@ -34,7 +34,7 @@ const outlineQuestions = [
   {
     id: 'protagonist',
     title: '主角的性格特征是什么？',
-    options: ['英勇 / 勇敢', '智慧 / 理性', '忍耐 / 坚韧', '幽默 / 机智', '叛逆 / 自由', '矛盾 / 内心冲突'],
+    options: ['英勇 / 勇敢', '智慧 / 理性', '忍耐 / 坚韧', '幽默 / 机智', '叛逆 / 由', '矛盾 / 内心冲突'],
     otherLabel: '其他（请简述）',
     pending: '待议：是否考虑加入角色的缺点或者成长曲线？'
   },
@@ -109,12 +109,12 @@ const buildInitialSelections = () =>
   );
 
 const defaultOutlinePromptTemplate =
-  '你是一个专业的故事创作者，本故事的核心主题是：[选择的主题]，故事发生在：[选择的背景设定]。故事的主要冲突是：[选择的冲突类型]，而主角性格为：[选择的性格特征]。故事中的主要反派是：[选择的反派或对立力量]，故事情感基调为：[选择的情感基调]。本故事使[选择的叙述视角]视角进行叙述，时间线采用[选择的时间线设置]。主角的目标是：[选择的目标]，故事将以[选择的结局]结尾。';
+  '你是一个专业的故事创作者，本故事的核心主题是：[选择的主题]，故事发生在：[选择的背景设定]。故事的主要冲突是：[选择的冲突类型]，而主角性格为：[选择的性格特征]。故事中的主要反派是：[选择的反派或对立力量]，故事情感基调为：[选择的情感基调]。本故事使用[选择的叙述视角]视角进行叙述，时间线采用[选择的时间线设置]。主角的目标是：[选择的目标]，故事将以[选择的结局]结尾。';
 
 const NovelDetail = () => {
   const { novelId } = useParams();
   const navigate = useNavigate();
-  const { data, addChapter, updateChapter, updateNovel, upsertRule } = useData();
+  const { data, addChapter, updateChapter, updateNovel, upsertResource, upsertRule } = useData();
   const novel = data.novels.find((n) => n.id === novelId);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -124,6 +124,8 @@ const NovelDetail = () => {
   const [promptModalOpen, setPromptModalOpen] = useState(false);
   const [outlineViewOpen, setOutlineViewOpen] = useState(false);
   const [outlineEditMode, setOutlineEditMode] = useState(false);
+  const [relationshipModalOpen, setRelationshipModalOpen] = useState(false);
+  const [uploadingNovel, setUploadingNovel] = useState(false);
   const [outlineSelections, setOutlineSelections] = useState(buildInitialSelections);
   const [outlineSummary, setOutlineSummary] = useState([]);
   const [outlinePromptDraft, setOutlinePromptDraft] = useState(novel?.outlinePrompt || '');
@@ -156,6 +158,29 @@ const NovelDetail = () => {
           otherLabel: question.otherLabel,
           pending: question.pending
         }))
+      }
+    });
+  }, [data.rules, upsertRule]);
+
+  useEffect(() => {
+    const existing = (data.rules || []).some((rule) => rule.tool === '生成小说-正文规则');
+    if (existing) return;
+    upsertRule({
+      tool: '生成小说-正文规则',
+      description: '生成小说阶段的规则包说明与导入规范。',
+      parameters: {
+        overview: '用于生成小说正文的规则说明与输入规范。',
+        tasks: ['生成小说正文', '补充必要的资源库基础信息', '维护总角色关系网（如有变更）'],
+        importSpec: {
+          outline: '小说大纲（文本）',
+          existingText: '已有小说原文（章节列表）',
+          resources: {
+            characters: '角色资源描述与成长史（无图）',
+            scenes: '场景资源文字与参考图（如有）'
+          },
+          relationshipGraph: '总角色关系网',
+          rules: '生成小说对应规则库内容'
+        }
       }
     });
   }, [data.rules, upsertRule]);
@@ -271,6 +296,156 @@ const NovelDetail = () => {
     }
   };
 
+  const handleRelationshipImport = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const cleaned = text.replace(/^\uFEFF/, '').trim();
+      if (!cleaned) {
+        alert('关系网 JSON 为空');
+        return;
+      }
+      let parsed = JSON.parse(cleaned);
+      if (typeof parsed === 'string') {
+        parsed = JSON.parse(parsed);
+      }
+      updateNovel(novelId, { relationshipGraph: parsed });
+    } catch (e) {
+      alert('关系网 JSON 解析失败');
+    }
+  };
+
+  const handleRelationshipExport = () => {
+    const blob = new Blob([JSON.stringify(novel.relationshipGraph || { nodes: [], relations: [] }, null, 2)], {
+      type: 'application/json'
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${novel.title || 'novel'}-relationship.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadNovelPackage = () => {
+    const characters = (data.resources.characters || []).filter(
+      (character) => !character.novelId || character.novelId === novelId
+    );
+    const characterPayload = characters.map((character) => ({
+      id: character.id,
+      name: character.name,
+      description: character.description,
+      tags: character.tags || [],
+      aliases: character.aliases || [],
+      priorityPin: character.priorityPin || false,
+      meta: {
+        personalitySetting: character.meta?.personalitySetting || '',
+        growthTrajectory: character.meta?.growthTrajectory || '',
+        characterGrowthHistory: character.meta?.characterGrowthHistory || [],
+        persona: character.meta?.persona || ''
+      },
+      form: character.form || [],
+      action: character.action || []
+    }));
+    const scenePayload = (data.resources.scenes || []).map((scene) => ({
+      id: scene.id,
+      name: scene.name,
+      description: scene.description,
+      tags: scene.tags || [],
+      meta: scene.meta || {},
+      images: scene.images || []
+    }));
+    const payload = {
+      novel: {
+        id: novel.id,
+        title: novel.title,
+        outlinePrompt: novel.outlinePrompt || '',
+        outlineText: novel.outlineText || '',
+        outlineVersions: novel.outlineVersions || []
+      },
+      chapters: (novel.chapters || []).map((chapter) => ({
+        id: chapter.id,
+        title: chapter.title,
+        content: chapter.content || '',
+        status: chapter.status || ''
+      })),
+      resources: {
+        characters: characterPayload,
+        scenes: scenePayload
+      },
+      relationshipGraph: novel.relationshipGraph || { nodes: [], relations: [] },
+      rules: (data.rules || []).filter((rule) => (rule.tool || '').includes('生成小说'))
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${novel.title || 'novel'}-generation.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleUploadNovelPackage = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      setUploadingNovel(true);
+      const text = await file.text();
+      const cleaned = text.replace(/^\uFEFF/, '').trim();
+      if (!cleaned) {
+        alert('小说包为空');
+        return;
+      }
+      let parsed = JSON.parse(cleaned);
+      if (typeof parsed === 'string') {
+        parsed = JSON.parse(parsed);
+      }
+      const payloadNovel = parsed.novel || parsed;
+      if (payloadNovel.outlineText || payloadNovel.outlinePrompt) {
+        updateNovel(novelId, {
+          outlineText: payloadNovel.outlineText || novel.outlineText || '',
+          outlinePrompt: payloadNovel.outlinePrompt || novel.outlinePrompt || ''
+        });
+      }
+      if (parsed.relationshipGraph) {
+        updateNovel(novelId, { relationshipGraph: parsed.relationshipGraph });
+      }
+      if (Array.isArray(parsed.chapters)) {
+        const existing = novel.chapters || [];
+        const incoming = parsed.chapters.map((chapter) => ({
+          id: crypto.randomUUID(),
+          title: chapter.title || '新章节',
+          status: chapter.status || '仅录入',
+          content: chapter.content || '',
+          storyboards: chapter.storyboards || [],
+          storyboardUpdatedAt: chapter.storyboardUpdatedAt || null
+        }));
+        updateNovel(novelId, { chapters: [...existing, ...incoming] });
+      }
+      const resources = parsed.resources || {};
+      (resources.characters || []).forEach((character) => {
+        upsertResource('characters', {
+          ...character,
+          id: character.id || crypto.randomUUID(),
+          novelId
+        });
+      });
+      (resources.scenes || []).forEach((scene) => {
+        upsertResource('scenes', {
+          ...scene,
+          id: scene.id || crypto.randomUUID()
+        });
+      });
+      alert('小说包导入完成');
+    } catch (error) {
+      alert('小说包解析失败');
+    } finally {
+      setUploadingNovel(false);
+      event.target.value = '';
+    }
+  };
+
   return (
     <div className="card">
       <div className="space-between">
@@ -328,6 +503,16 @@ const NovelDetail = () => {
               查看大纲
             </button>
           )}
+          <button type="button" className="ghost-button" onClick={() => setRelationshipModalOpen(true)}>
+            总关系网
+          </button>
+          <button type="button" className="ghost-button" onClick={handleDownloadNovelPackage}>
+            生成小说
+          </button>
+          <label className="file-button">
+            上传小说
+            <input type="file" accept="application/json" onChange={handleUploadNovelPackage} />
+          </label>
           <button type="button" onClick={() => setModalOpen(true)}>+ 新建章节</button>
         </div>
       </div>
@@ -565,6 +750,42 @@ const NovelDetail = () => {
             ) : (
               <div className="readonly-field multi-line">{outlineDraft || '暂无大纲'}</div>
             )}
+          </div>
+        </div>
+      )}
+
+      {relationshipModalOpen && (
+        <div className="modal">
+          <div className="modal-content">
+            <div className="section-header">
+              <h3>总关系网</h3>
+              <div className="resource-header-actions">
+                <button type="button" className="ghost-button" onClick={handleRelationshipExport}>
+                  导出关系网
+                </button>
+                <label className="file-button">
+                  导入关系网
+                  <input type="file" accept="application/json" onChange={handleRelationshipImport} />
+                </label>
+                <button type="button" className="tab" onClick={() => setRelationshipModalOpen(false)}>
+                  关闭
+                </button>
+              </div>
+            </div>
+            <div className="stack">
+              {(novel.relationshipGraph?.relations || []).length === 0 && (
+                <div className="empty">暂无关系网数据，可导 JSON 进行展示。</div>
+              )}
+              {(novel.relationshipGraph?.relations || []).map((rel, index) => (
+                <div key={`${rel.source || rel.sourceId || 'source'}-${index}`} className="card subtle">
+                  <div className="label">
+                    {rel.source || rel.sourceId || rel.from || rel.fromId || rel.sourceName || '未知角色'} ⇄{' '}
+                    {rel.target || rel.targetId || rel.to || rel.toId || rel.targetName || '未知角色'}
+                  </div>
+                  <div className="muted">{rel.relation || '关系待补充'}</div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}

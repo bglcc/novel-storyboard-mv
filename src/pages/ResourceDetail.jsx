@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import JSZip from 'jszip';
 import { useData } from '../context/DataContext';
 import '../styles/resource-enhancements.css';
@@ -41,7 +41,8 @@ const strategyOptions = [
 const ResourceDetail = () => {
   const { type, resourceId } = useParams();
   const navigate = useNavigate();
-  const { data, updateResourceImages, upsertResource, upsertRule } = useData();
+  const location = useLocation();
+  const { data, updateNovel, updateResourceImages, upsertResource, upsertRule } = useData();
   const resourceList = data.resources[type] || [];
   const resource = useMemo(
     () => resourceList.find((r) => r.id === resourceId),
@@ -74,6 +75,9 @@ const ResourceDetail = () => {
   const [transferQuery, setTransferQuery] = useState('');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
+  const novelIdFromQuery = new URLSearchParams(location.search).get('novelId') || '';
+  const currentNovel = data.novels?.find((novel) => novel.id === novelIdFromQuery);
+  const novelRelationshipGraph = currentNovel?.relationshipGraph;
 
   useEffect(() => {
     if (resource) {
@@ -1064,7 +1068,39 @@ const ResourceDetail = () => {
   const sceneDescription = meta.sceneDescription || '';
   const sceneElementDetails = meta.sceneElementDetails || [];
   const sceneVariants = meta.sceneVariants || [];
-  const relationGraph = meta.relationshipGraph || { nodes: [], relations: [] };
+  const resolveRelationGraph = () => novelRelationshipGraph || meta.relationshipGraph || { nodes: [], relations: [] };
+  const buildCharacterRelationGraph = () => {
+    const graph = resolveRelationGraph();
+    if (!resource || !novelRelationshipGraph) {
+      return graph;
+    }
+    const relations = graph.relations || [];
+    const centerKeys = [resource.id, resource.name].filter(Boolean).map((value) => String(value).toLowerCase());
+    const matches = (value, keys) => value && keys.includes(String(value).toLowerCase());
+    const relatedRelations = relations.filter((rel) => {
+      const source = rel.source ?? rel.sourceId ?? rel.from ?? rel.fromId ?? rel.sourceName;
+      const target = rel.target ?? rel.targetId ?? rel.to ?? rel.toId ?? rel.targetName;
+      return matches(source, centerKeys) || matches(target, centerKeys);
+    });
+    const relatedKeys = new Set();
+    relatedRelations.forEach((rel) => {
+      const source = rel.source ?? rel.sourceId ?? rel.from ?? rel.fromId ?? rel.sourceName;
+      const target = rel.target ?? rel.targetId ?? rel.to ?? rel.toId ?? rel.targetName;
+      if (source && !matches(source, centerKeys)) relatedKeys.add(String(source));
+      if (target && !matches(target, centerKeys)) relatedKeys.add(String(target));
+    });
+    const nodes = (graph.nodes || []).filter((node) => {
+      const keys = [node.id, node.name].filter(Boolean).map((value) => String(value));
+      return keys.some((key) => relatedKeys.has(String(key)));
+    });
+    relatedKeys.forEach((key) => {
+      if (!nodes.find((node) => String(node.id || node.name) === String(key))) {
+        nodes.push({ id: key, name: key });
+      }
+    });
+    return { nodes, relations: relatedRelations };
+  };
+  const relationGraph = buildCharacterRelationGraph();
   const growthHistory = meta.characterGrowthHistory || [];
   const relationNodes = relationGraph.nodes || [];
   const relationPositions = relationNodes.map((node, index) => {
@@ -1118,20 +1154,82 @@ const ResourceDetail = () => {
       if (typeof parsed === 'string') {
         parsed = JSON.parse(parsed);
       }
-      setMeta((prev) => ({ ...prev, relationshipGraph: parsed }));
+      if (currentNovel) {
+        updateNovel(currentNovel.id, { relationshipGraph: parsed });
+      } else {
+        setMeta((prev) => ({ ...prev, relationshipGraph: parsed }));
+      }
     } catch (e) {
       alert('关系网 JSON 解析失败');
     }
   };
 
   const handleRelationshipExport = () => {
-    const blob = new Blob([JSON.stringify(relationGraph, null, 2)], { type: 'application/json' });
+    const graph = novelRelationshipGraph || relationGraph;
+    const blob = new Blob([JSON.stringify(graph, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${resource.name || 'character'}-relationship.json`;
+    link.download = `${currentNovel?.title || resource.name || 'character'}-relationship.json`;
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleSceneRuleExport = () => {
+    const payload = {
+      scene: {
+        id: resource.id,
+        name: resource.name,
+        description,
+        tags: normalizeTags(),
+        meta: {
+          sceneLayout,
+          sceneDescription,
+          sceneElementDetails,
+          sceneVariants
+        }
+      },
+      rules: (data.rules || []).filter((rule) => rule.tool === '场景资源')
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${resource.name || 'scene'}-rule.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleSceneRuleImport = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const cleaned = text.replace(/^\uFEFF/, '').trim();
+      if (!cleaned) {
+        alert('场景规则包为空');
+        return;
+      }
+      let parsed = JSON.parse(cleaned);
+      if (typeof parsed === 'string') {
+        parsed = JSON.parse(parsed);
+      }
+      const payload = parsed.scene || parsed;
+      setName(payload.name || resource.name || '');
+      setDescription(payload.description || '');
+      if (payload.tags) {
+        setTags((payload.tags || []).join(', '));
+      }
+      setMeta((prev) => ({
+        ...prev,
+        sceneLayout: payload.meta?.sceneLayout || payload.sceneLayout || prev.sceneLayout,
+        sceneDescription: payload.meta?.sceneDescription || payload.sceneDescription || prev.sceneDescription,
+        sceneElementDetails: payload.meta?.sceneElementDetails || payload.sceneElementDetails || prev.sceneElementDetails,
+        sceneVariants: payload.meta?.sceneVariants || payload.sceneVariants || prev.sceneVariants
+      }));
+    } catch (error) {
+      alert('场景规则包解析失败');
+    }
   };
 
   const handleGrowthHistoryImport = async (event) => {
@@ -1902,6 +2000,21 @@ const ResourceDetail = () => {
                   </button>
                 ))}
               </div>
+              <div className="card section-card">
+                <div className="section-header">
+                  <h3>场景规则库</h3>
+                  <div className="resource-header-actions">
+                    <button type="button" className="ghost-button" onClick={handleSceneRuleExport}>
+                      下载场景规则包
+                    </button>
+                    <label className="file-button">
+                      上传场景资源包
+                      <input type="file" accept="application/json" onChange={handleSceneRuleImport} />
+                    </label>
+                  </div>
+                </div>
+                <div className="muted">导入/导出场景结构、画面描述与规则信息。</div>
+              </div>
               {sceneTab === 'structure' && (
                 <div className="card section-card">
                   <div className="section-header">
@@ -2364,10 +2477,10 @@ const ResourceDetail = () => {
                     </div>
                     <div className="row">
                       <button type="button" onClick={handleExpressionExportZip} disabled={loading}>
-                        导出单个表情 ZIP
+                        导出表情资源包
                       </button>
                       <label className="file-button">
-                        导入表情 ZIP
+                        表情规则库-表情-导入/导出-对应角色-上传
                         <input type="file" accept="application/zip" onChange={handleExpressionImportZip} />
                       </label>
                     </div>

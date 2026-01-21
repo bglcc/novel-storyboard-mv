@@ -21,20 +21,41 @@ const ResourceLibrary = () => {
   const navigate = useNavigate();
   const queryTab = new URLSearchParams(location.search).get('tab');
   const showMissing = new URLSearchParams(location.search).get('show') === 'missing';
+  const queryNovelId = new URLSearchParams(location.search).get('novelId') || '';
   const validTabs = useMemo(() => tabs.map((t) => t.key), []);
   const initialTab = validTabs.includes(queryTab) ? queryTab : 'characters';
   const [activeTab, setActiveTab] = useState(initialTab);
   const [tagFilter, setTagFilter] = useState('');
+  const [selectedNovelId, setSelectedNovelId] = useState(queryNovelId);
+
+  const novels = data.novels || [];
 
   useEffect(() => {
     const nextTab = validTabs.includes(queryTab) ? queryTab : 'characters';
     setActiveTab(nextTab);
   }, [queryTab, validTabs]);
 
+  useEffect(() => {
+    if (!novels.length) {
+      setSelectedNovelId('');
+      return;
+    }
+    if (queryNovelId) {
+      setSelectedNovelId(queryNovelId);
+      return;
+    }
+    if (!selectedNovelId) {
+      setSelectedNovelId(novels[0]?.id || '');
+    }
+  }, [novels, queryNovelId, selectedNovelId]);
+
   const resources = (data.resources?.[activeTab] || []).filter((res) => {
     const missingOk = showMissing ? res.status === '待补齐' || res.isAvailable === false : true;
     const tags = (res.tags || []).join(',').toLowerCase();
     const byTag = tagFilter ? tags.includes(tagFilter.toLowerCase()) : true;
+    if (activeTab === 'characters' && selectedNovelId) {
+      return missingOk && byTag && (!res.novelId || res.novelId === selectedNovelId);
+    }
     return missingOk && byTag;
   });
 
@@ -92,6 +113,25 @@ const ResourceLibrary = () => {
         hasMissingByTab={hasMissingByTab}
         onTabChange={setActiveTab}
       />
+      {activeTab === 'characters' && (
+        <div className="row" style={{ marginBottom: '16px' }}>
+          <label>
+            选择小说
+            <select
+              value={selectedNovelId}
+              onChange={(e) => setSelectedNovelId(e.target.value)}
+              disabled={novels.length === 0}
+            >
+              {novels.length === 0 && <option value="">暂无小说</option>}
+              {novels.map((novel) => (
+                <option key={novel.id} value={novel.id}>
+                  {novel.title}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
       <div className="grid fixed-four">
         {resources.map((res) => {
           const coverImage = resolveCoverImage(res);
@@ -100,6 +140,8 @@ const ResourceLibrary = () => {
             activeTab === 'characters'
               ? getCharacterStatus(res)
               : res.status || (res.isAvailable ? '已完成' : '待补齐');
+          const novelParam =
+            activeTab === 'characters' && selectedNovelId ? `?novelId=${selectedNovelId}` : '';
           return (
             <ResourceCard
               key={res.id}
@@ -107,7 +149,7 @@ const ResourceLibrary = () => {
               coverImage={coverImage}
               hasCover={hasCover}
               statusText={statusText}
-              onEdit={() => navigate(`/resources/${activeTab}/${res.id}`)}
+              onEdit={() => navigate(`/resources/${activeTab}/${res.id}${novelParam}`)}
               onDelete={() => handleDelete(res.id)}
             />
           );

@@ -9,7 +9,6 @@ const ResourceCard = ({ resource, coverImage, hasCover, statusText, onEdit, onDe
         ) : (
           <div className="placeholder" />
         )}
-        {!hasCover && <span className="badge warning">待完成</span>}
         <span className={`badge status ${statusText === '已完成' ? 'success' : 'warning'}`}>
           {statusText}
         </span>

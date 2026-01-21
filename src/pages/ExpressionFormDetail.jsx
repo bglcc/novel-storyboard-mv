@@ -14,6 +14,7 @@ import {
   upsertExpressionForm,
   upsertExpressionRule
 } from '../utils/expressionFormsDb';
+import '../styles/resource.css';
 
 const tabs = [
   { key: 'base', label: '基础信息' },

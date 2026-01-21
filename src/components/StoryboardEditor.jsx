@@ -45,7 +45,7 @@ const emptyShot = (idx) => ({
 });
 
 const StoryboardEditor = ({ novelId, chapter }) => {
-  const { updateChapter, data, ensurePlaceholderResources } = useData();
+  const { updateChapter, data, ensurePlaceholderResources, upsertResource } = useData();
   const [missingResources, setMissingResources] = useState([]);
   const [activeTabs, setActiveTabs] = useState({});
   const [sideTabsState, setSideTabsState] = useState({});
@@ -55,8 +55,11 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const [expressionForms, setExpressionForms] = useState([]);
 
   const scenes = data.resources.scenes || [];
-  const characters = data.resources.characters || [];
+  const characters = (data.resources.characters || []).filter(
+    (character) => !character.novelId || character.novelId === novelId
+  );
   const props = data.resources.props || [];
+  const novel = (data.novels || []).find((item) => item.id === novelId);
 
   useEffect(() => {
     let active = true;
@@ -109,7 +112,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     updateChapter(novelId, chapter.id, { storyboards: next, storyboardUpdatedAt: Date.now() });
     const missing = detectMissingResources(next);
     if (missing.length) {
-      ensurePlaceholderResources(missing);
+      ensurePlaceholderResources(missing, novelId);
       setMissingResources(missing);
     } else {
       setMissingResources([]);
@@ -123,7 +126,26 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     reader.onload = (e) => {
       try {
         const parsed = JSON.parse(e.target.result);
-        const shots = Array.isArray(parsed) ? parsed : parsed.storyboard || [];
+        const shots = Array.isArray(parsed) ? parsed : parsed.storyboard || parsed.storyboards || [];
+        const resourcesPayload = parsed.resources || {};
+        (resourcesPayload.characters || []).forEach((character) => {
+          upsertResource('characters', {
+            ...character,
+            id: character.id || crypto.randomUUID()
+          });
+        });
+        (resourcesPayload.scenes || []).forEach((scene) => {
+          upsertResource('scenes', {
+            ...scene,
+            id: scene.id || crypto.randomUUID()
+          });
+        });
+        (resourcesPayload.props || []).forEach((prop) => {
+          upsertResource('props', {
+            ...prop,
+            id: prop.id || crypto.randomUUID()
+          });
+        });
         const normalized = shots.map((shot, idx) => ({
           id: shot.id || crypto.randomUUID(),
           shotNumber: `${idx + 1}`,
@@ -219,11 +241,110 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   };
 
   const handleDownload = () => {
-    const blob = new Blob([JSON.stringify(chapter.storyboards || [], null, 2)], { type: 'application/json' });
+    const usedCharacterNames = new Set();
+    const usedSceneNames = new Set();
+    const usedPropNames = new Set();
+    (chapter.storyboards || []).forEach((shot) => {
+      (shot.characters || []).forEach((name) => usedCharacterNames.add(name));
+      if (shot.scene) usedSceneNames.add(shot.scene);
+      (shot.props || []).forEach((name) => usedPropNames.add(name));
+    });
+    const characterResources = (data.resources.characters || []).filter((item) => usedCharacterNames.has(item.name));
+    const sceneResources = (data.resources.scenes || []).filter((item) => usedSceneNames.has(item.name));
+    const propResources = (data.resources.props || []).filter((item) => usedPropNames.has(item.name));
+    const composition = (chapter.storyboards || []).map((shot) => ({
+      shotNumber: shot.shotNumber,
+      scene: shot.scene || '',
+      characters: shot.characters || [],
+      props: shot.props || [],
+      layout: shot.composition || shot.layout || []
+    }));
+    const payload = {
+      storyboards: chapter.storyboards || [],
+      composition,
+      novel: {
+        id: novel?.id || '',
+        title: novel?.title || '',
+        outlineText: novel?.outlineText || '',
+        outlinePrompt: novel?.outlinePrompt || '',
+        fullText: (novel?.chapters || []).map((item) => item.content || '').join('\n\n')
+      },
+      relationshipGraph: novel?.relationshipGraph || { nodes: [], relations: [] },
+      resources: {
+        characters: characterResources,
+        scenes: sceneResources,
+        props: propResources
+      },
+      rules: data.rules || []
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${chapter.title || 'storyboard'}.json`;
+    link.download = `${chapter.title || 'storyboard'}-package.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleVideoPackageDownload = () => {
+    const payload = (chapter.storyboards || []).map((shot) => ({
+      shotNumber: shot.shotNumber,
+      description: shot.description,
+      animation: {
+        movement: shot.cameraMovement,
+        angle: shot.cameraAngle,
+        shotType: shot.shotType,
+        shotTime: shot.shotTime
+      },
+      frames: {
+        firstFrame: shot.previewImage || '',
+        previewImage: shot.previewImage || '',
+        keyframes: shot.keyframes || []
+      },
+      audio: {
+        dialogue: shot.audioDialogue,
+        tone: shot.audioTone,
+        bgm: shot.audioBgm,
+        sfx: shot.audioSfx
+      }
+    }));
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${chapter.title || 'storyboard'}-video.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleStoryboardRuleExport = () => {
+    const payload = {
+      rules: data.rules || [],
+      novel: {
+        id: novel?.id || '',
+        title: novel?.title || '',
+        outlineText: novel?.outlineText || '',
+        outlinePrompt: novel?.outlinePrompt || '',
+        fullText: (novel?.chapters || []).map((item) => item.content || '').join('\n\n')
+      },
+      resources: {
+        characters: data.resources.characters || [],
+        scenes: data.resources.scenes || [],
+        props: data.resources.props || [],
+        expressions: data.resources.expressions || []
+      },
+      chapter: {
+        id: chapter.id,
+        title: chapter.title,
+        content: chapter.content || ''
+      },
+      relationshipGraph: novel?.relationshipGraph || { nodes: [], relations: [] }
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${chapter.title || 'storyboard'}-rules.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -267,8 +388,17 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       <div className="space-between">
         <h3>分镜导入与编辑</h3>
         <div className="row">
-          <input type="file" accept="application/json" onChange={handleImport} />
+          <label className="file-button">
+            上传分镜头
+            <input type="file" accept="application/json" onChange={handleImport} />
+          </label>
           <button onClick={handleDownload}>下载分镜数据</button>
+          <button type="button" onClick={handleStoryboardRuleExport}>
+            生成分镜头规则库
+          </button>
+          <button type="button" onClick={handleVideoPackageDownload}>
+            生成视频
+          </button>
           <label className="primary-link file-label">
             批量上传预览图
             <input type="file" accept="image/*" multiple onChange={handleBatchUpload} />

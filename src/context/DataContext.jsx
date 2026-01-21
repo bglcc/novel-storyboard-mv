@@ -38,6 +38,7 @@ export const DataProvider = ({ children }) => {
             outlineUpdatedAt: novel.outlineUpdatedAt || null,
             outlineStatus: novel.outlineStatus || '',
             outlineVersions: novel.outlineVersions || [],
+            relationshipGraph: novel.relationshipGraph || { nodes: [], relations: [] },
             chapters: (novel.chapters || []).map((chapter) => ({
               id: chapter.id,
               title: chapter.title,
@@ -71,7 +72,8 @@ export const DataProvider = ({ children }) => {
       outlineGeneratedAt: null,
       outlineUpdatedAt: null,
       outlineStatus: '未生成',
-      outlineVersions: []
+      outlineVersions: [],
+      relationshipGraph: { nodes: [], relations: [] }
     };
     setData((prev) => ({ ...prev, novels: [...prev.novels, newNovel] }));
     return newNovel.id;
@@ -163,14 +165,15 @@ export const DataProvider = ({ children }) => {
     setData((prev) => ({ ...prev, rules: rules.map((r) => ({ ...r, id: r.id || uuidv4() })) }));
   };
 
-  const ensurePlaceholderResources = (missing) => {
+  const ensurePlaceholderResources = (missing, novelId = '') => {
     missing.forEach((item) => {
       const basePayload = {
         name: item.name,
         description: item.description || '占位资源，待补齐',
         isAvailable: false,
         status: '待补齐',
-        images: []
+        images: [],
+        ...(item.type === 'characters' && novelId ? { novelId } : {})
       };
       const typePayloads = {
         characters: {
@@ -232,7 +235,6 @@ export const DataProvider = ({ children }) => {
       });
     });
   };
-
 
   const deleteResource = (type, resourceId) => {
     setData((prev) => ({
