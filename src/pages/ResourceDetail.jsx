@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import JSZip from 'jszip';
 import { useData } from '../context/DataContext';
@@ -75,6 +75,11 @@ const ResourceDetail = () => {
   const [transferQuery, setTransferQuery] = useState('');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
+  const [previewImage, setPreviewImage] = useState('');
+  const [previewLabel, setPreviewLabel] = useState('');
+  const viewInputRefs = useRef({});
+  const sceneInputRefs = useRef({});
+  const expressionTransferRefs = useRef({});
   const novelIdFromQuery = new URLSearchParams(location.search).get('novelId') || '';
   const currentNovel = data.novels?.find((novel) => novel.id === novelIdFromQuery);
   const novelRelationshipGraph = currentNovel?.relationshipGraph;
@@ -148,7 +153,7 @@ const ResourceDetail = () => {
           viewAsset: {
             viewAngle: 'string，视角名称，需与 viewRequirements 对应。',
             fileName: 'string，建议命名：角色名-形态名-视角名-序号.ext。',
-            storage: '本地部署使用 base64/Blob 存储在浏览器数据中，不支持直接写入本地路径。'
+            storage: '本地部署使用 base64/Blob 存储在浏览器数据中，不支持直接写入本地路。'
           }
         }
       }
@@ -867,12 +872,44 @@ const ResourceDetail = () => {
     const expressionStatus = type === 'expressions' ? getExpressionStatus() : resource.status;
     const expressionImages = type === 'expressions' ? syncExpressionImages(expressionAssets) : resource.images || [];
     const updatedMeta = type === 'expressions' ? { ...meta, expressionRuleText } : meta;
+    const sceneHasImages =
+      type === 'scenes'
+        ? (meta.sceneVariants || []).some((variant) => (variant.images || []).length > 0) ||
+          (resource.images || []).length > 0
+        : false;
+    const propHasImages =
+      type === 'props'
+        ? (meta.propVariants || []).some((variant) => (variant.images || []).length > 0) ||
+          (resource.images || []).length > 0
+        : false;
+    const nextStatus =
+      type === 'characters'
+        ? getCharacterStatus()
+        : type === 'expressions'
+          ? expressionStatus
+          : type === 'scenes'
+            ? sceneHasImages
+              ? '已完成'
+              : '待补齐'
+            : type === 'props'
+              ? propHasImages
+                ? '已完成'
+                : '待补齐'
+              : resource.status;
+    const nextAvailable =
+      type === 'expressions'
+        ? expressionStatus === '已完成'
+        : type === 'scenes'
+          ? sceneHasImages
+          : type === 'props'
+            ? propHasImages
+            : resource.isAvailable;
     return {
       ...resource,
       type,
       name,
       aliases: normalizeAliases(),
-      status: type === 'characters' ? getCharacterStatus() : expressionStatus,
+      status: nextStatus,
       priorityPin,
       description,
       tags: normalizeTags(),
@@ -881,7 +918,7 @@ const ResourceDetail = () => {
       form: forms,
       action: actions,
       images: type === 'expressions' ? expressionImages : resource.images || [],
-      isAvailable: type === 'expressions' ? expressionStatus === '已完成' : resource.isAvailable,
+      isAvailable: nextAvailable,
       createdAt: resource.createdAt || Date.now(),
       updatedAt: Date.now()
     };
@@ -1082,33 +1119,113 @@ const ResourceDetail = () => {
       const target = rel.target ?? rel.targetId ?? rel.to ?? rel.toId ?? rel.targetName;
       return matches(source, centerKeys) || matches(target, centerKeys);
     });
-    const relatedKeys = new Set();
+    const relatedKeys = new Map();
     relatedRelations.forEach((rel) => {
       const source = rel.source ?? rel.sourceId ?? rel.from ?? rel.fromId ?? rel.sourceName;
       const target = rel.target ?? rel.targetId ?? rel.to ?? rel.toId ?? rel.targetName;
-      if (source && !matches(source, centerKeys)) relatedKeys.add(String(source));
-      if (target && !matches(target, centerKeys)) relatedKeys.add(String(target));
+      if (source && !matches(source, centerKeys)) {
+        const key = String(source).toLowerCase();
+        if (!relatedKeys.has(key)) relatedKeys.set(key, String(source));
+      }
+      if (target && !matches(target, centerKeys)) {
+        const key = String(target).toLowerCase();
+        if (!relatedKeys.has(key)) relatedKeys.set(key, String(target));
+      }
     });
     const nodes = (graph.nodes || []).filter((node) => {
-      const keys = [node.id, node.name].filter(Boolean).map((value) => String(value));
-      return keys.some((key) => relatedKeys.has(String(key)));
+      const keys = [node.id, node.name].filter(Boolean).map((value) => String(value).toLowerCase());
+      return keys.some((key) => relatedKeys.has(key));
     });
-    relatedKeys.forEach((key) => {
-      if (!nodes.find((node) => String(node.id || node.name) === String(key))) {
-        nodes.push({ id: key, name: key });
+    relatedKeys.forEach((rawValue, key) => {
+      if (!nodes.find((node) => [node.id, node.name].filter(Boolean).some((v) => String(v).toLowerCase() === key))) {
+        nodes.push({ id: rawValue, name: rawValue });
       }
     });
     return { nodes, relations: relatedRelations };
   };
+
+  const handleExpressionTransferUpload = (requestId) => async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setMeta((prev) => ({
+        ...prev,
+        expressionTransferRequests: (prev.expressionTransferRequests || []).map((item) =>
+          item.id === requestId ? { ...item, image: reader.result, fileName: file.name } : item
+        )
+      }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleExpressionTransferDownload = (request) => {
+    const source = request?.image || request?.cover;
+    if (!source) return;
+    const link = document.createElement('a');
+    link.href = source;
+    link.download = `${request.character || request.name || 'expression'}.png`;
+    link.click();
+  };
+
+  const openPreview = (src, label = '') => {
+    if (!src) return;
+    setPreviewImage(src);
+    setPreviewLabel(label);
+  };
+
+  const closePreview = () => {
+    setPreviewImage('');
+    setPreviewLabel('');
+  };
   const relationGraph = buildCharacterRelationGraph();
   const growthHistory = meta.characterGrowthHistory || [];
-  const relationNodes = relationGraph.nodes || [];
+  const relationNodes = (() => {
+    const nodes = relationGraph.nodes || [];
+    const relations = relationGraph.relations || [];
+    const collected = nodes.length
+      ? nodes
+      : Array.from(
+          new Set(
+            relations.flatMap((rel) => [
+              rel.source,
+              rel.sourceId,
+              rel.from,
+              rel.fromId,
+              rel.sourceName,
+              rel.target,
+              rel.targetId,
+              rel.to,
+              rel.toId,
+              rel.targetName
+            ])
+          )
+        )
+          .filter(Boolean)
+          .map((name) => ({ id: name, name }));
+    const seen = new Set();
+    return collected.reduce((acc, node) => {
+      const key = String(node.id || node.name || '').toLowerCase();
+      if (!key || seen.has(key)) return acc;
+      seen.add(key);
+      acc.push({ ...node, name: node.name || node.id || '' });
+      return acc;
+    }, []);
+  })();
   const relationPositions = relationNodes.map((node, index) => {
     const angle = (index / relationNodes.length) * Math.PI * 2;
     const x = 50 + 38 * Math.cos(angle);
     const y = 50 + 38 * Math.sin(angle);
     return { ...node, position: { x, y }, key: node.id || node.name || `node-${index}` };
   });
+  const relationImageMap = new Map(
+    relationNodes.map((node) => {
+      const match = data.resources.characters.find(
+        (character) => character.id === node.id || character.name === node.name
+      );
+      return [node.id || node.name, resolveReferenceImage(match, match?.form?.[0]?.name || '默认形态')];
+    })
+  );
   const expressionPreviewCharacter = data.resources.characters?.[0];
   const expressionPreviewImage = resolveReferenceImage(
     expressionPreviewCharacter,
@@ -1360,15 +1477,37 @@ const ResourceDetail = () => {
   const handleSceneVariantBatchUpload = (variantId, requirements) => async (event) => {
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
-    const readers = files.map(
-      (file) =>
-        new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve({ src: reader.result, fileName: file.name });
-          reader.readAsDataURL(file);
-        })
-    );
-    const results = await Promise.all(readers);
+    let results = [];
+    const [firstFile] = files;
+    if (firstFile && /\.zip$/i.test(firstFile.name)) {
+      try {
+        const zip = await JSZip.loadAsync(firstFile);
+        const entries = Object.values(zip.files).filter(
+          (file) => !file.dir && /\.(png|jpg|jpeg|webp)$/i.test(file.name)
+        );
+        for (const entry of entries) {
+          const base64 = await entry.async('base64');
+          const extension = entry.name.split('.').pop();
+          results.push({
+            src: `data:image/${extension};base64,${base64}`,
+            fileName: entry.name
+          });
+        }
+      } catch (error) {
+        alert('解压失败，请检查 ZIP 文件');
+        return;
+      }
+    } else {
+      const readers = files.map(
+        (file) =>
+          new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve({ src: reader.result, fileName: file.name });
+            reader.readAsDataURL(file);
+          })
+      );
+      results = await Promise.all(readers);
+    }
     setMeta((prev) => {
       const variants = prev.sceneVariants || [];
       const nextVariants = variants.map((variant) => {
@@ -1407,6 +1546,112 @@ const ResourceDetail = () => {
     const link = document.createElement('a');
     link.href = url;
     link.download = `${resource.name || 'scene'}-${variant.name || 'variant'}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const propVariants = meta.propVariants || [];
+
+  const getPropVariantRequirements = (variant) => {
+    const images = variant.images || [];
+    const requirements = variant.imageRequirements || images.map((img) => img.label);
+    return requirements.length ? requirements : images.map((img) => img.label);
+  };
+
+  const handlePropVariantImageUpload = (variantId, label) => async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setMeta((prev) => {
+        const variants = prev.propVariants || [];
+        const nextVariants = variants.map((variant) => {
+          if (variant.id !== variantId) return variant;
+          const images = variant.images || [];
+          const filtered = images.filter((img) => img.label !== label);
+          return {
+            ...variant,
+            images: [
+              ...filtered,
+              { id: createAssetId(), label, src: reader.result, uploadedAt: new Date().toISOString() }
+            ]
+          };
+        });
+        return { ...prev, propVariants: nextVariants };
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handlePropVariantBatchUpload = (variantId, requirements) => async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+    let results = [];
+    const [firstFile] = files;
+    if (firstFile && /\.zip$/i.test(firstFile.name)) {
+      try {
+        const zip = await JSZip.loadAsync(firstFile);
+        const entries = Object.values(zip.files).filter(
+          (file) => !file.dir && /\.(png|jpg|jpeg|webp)$/i.test(file.name)
+        );
+        for (const entry of entries) {
+          const base64 = await entry.async('base64');
+          const extension = entry.name.split('.').pop();
+          results.push({
+            src: `data:image/${extension};base64,${base64}`,
+            fileName: entry.name
+          });
+        }
+      } catch (error) {
+        alert('解压失败，请检查 ZIP 文件');
+        return;
+      }
+    } else {
+      const readers = files.map(
+        (file) =>
+          new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve({ src: reader.result, fileName: file.name });
+            reader.readAsDataURL(file);
+          })
+      );
+      results = await Promise.all(readers);
+    }
+    setMeta((prev) => {
+      const variants = prev.propVariants || [];
+      const nextVariants = variants.map((variant) => {
+        if (variant.id !== variantId) return variant;
+        const images = variant.images || [];
+        const existingLabels = new Set(images.map((img) => img.label));
+        const missingLabels = requirements.filter((label) => !existingLabels.has(label));
+        const nextImages = [...images];
+        results.forEach((result, index) => {
+          const label = missingLabels[index] || result.fileName;
+          nextImages.push({
+            id: createAssetId(),
+            label,
+            src: result.src,
+            uploadedAt: new Date().toISOString()
+          });
+        });
+        return { ...variant, images: nextImages };
+      });
+      return { ...prev, propVariants: nextVariants };
+    });
+  };
+
+  const handlePropVariantExport = (variant) => {
+    const payload = {
+      id: variant.id,
+      name: variant.name,
+      imageRequirements: variant.imageRequirements || [],
+      images: variant.images || []
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${resource.name || 'prop'}-${variant.name || 'variant'}.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -1604,7 +1849,13 @@ const ResourceDetail = () => {
                       <button
                         type="button"
                         className="portrait-preview"
-                        onClick={() => asset?.src && window.open(asset.src, '_blank')}
+                        onClick={() => {
+                          if (asset?.src) {
+                            openPreview(asset.src, viewAngle);
+                          } else {
+                            viewInputRefs.current[viewAngle]?.click();
+                          }
+                        }}
                       >
                         {asset?.src ? <img src={asset.src} alt={viewAngle} /> : <div className="portrait-placeholder">暂无图片</div>}
                       </button>
@@ -1612,7 +1863,14 @@ const ResourceDetail = () => {
                         <span>{viewAngle}</span>
                         <label className="file-button">
                           上传
-                          <input type="file" accept="image/*" onChange={handleViewUpload(viewAngle)} />
+                          <input
+                            type="file"
+                            accept="image/*"
+                            ref={(el) => {
+                              viewInputRefs.current[viewAngle] = el;
+                            }}
+                            onChange={handleViewUpload(viewAngle)}
+                          />
                         </label>
                       </div>
                     </div>
@@ -1652,18 +1910,36 @@ const ResourceDetail = () => {
                     />
                   ))}
                 </svg>
-                {relationPositions.map((node) => (
-                  <button
-                    key={node.key}
-                    type="button"
-                    className="relation-node"
-                    style={{ left: `${node.position.x}%`, top: `${node.position.y}%` }}
-                    onClick={() => setFocusedRelation(node)}
-                  >
-                    {node.name}
-                  </button>
-                ))}
-                <div className="relation-center">{resource.name}</div>
+                {relationPositions.map((node) => {
+                  const avatar = relationImageMap.get(node.id || node.name) || '';
+                  return (
+                    <button
+                      key={node.key}
+                      type="button"
+                      className="relation-node rich"
+                      style={{ left: `${node.position.x}%`, top: `${node.position.y}%` }}
+                      onClick={() => setFocusedRelation(node)}
+                    >
+                      <div className="relation-node-avatar">
+                        {avatar ? <img src={avatar} alt={node.name} /> : <div className="placeholder" />}
+                      </div>
+                      <div className="relation-node-name">{node.name}</div>
+                    </button>
+                  );
+                })}
+                <div className="relation-center rich">
+                  <div className="relation-node-avatar">
+                    {resolveReferenceImage(resource, resource.form?.[0]?.name || '默认形态') ? (
+                      <img
+                        src={resolveReferenceImage(resource, resource.form?.[0]?.name || '默认形态')}
+                        alt={resource.name}
+                      />
+                    ) : (
+                      <div className="placeholder" />
+                    )}
+                  </div>
+                  <div className="relation-node-name">{resource.name}</div>
+                </div>
               </div>
             ) : (
               <div className="empty">暂无关系网数据，可导入 JSON 进行展示。</div>
@@ -1718,12 +1994,18 @@ const ResourceDetail = () => {
             </div>
           </div>
           {growthHistory.length ? (
-            <div className="growth-history-list">
+            <div className="growth-history-timeline">
               {growthHistory.map((entry, index) => (
-                <div key={`${entry.chapter || 'chapter'}-${index}`} className="growth-history-card">
-                  <div className="label">{entry.chapter || '未标注章节'}</div>
-                  <div className="growth-history-change">{entry.change || '变化待补充'}</div>
-                  <div className="muted">{entry.description || '暂无描述'}</div>
+                <div
+                  key={`${entry.chapter || 'chapter'}-${index}`}
+                  className={`growth-history-item ${index % 2 === 0 ? 'left' : 'right'}`}
+                >
+                  <div className="growth-history-node" />
+                  <div className="growth-history-timeline-card">
+                    <div className="label">{entry.chapter || '未标注章节'}</div>
+                    <div className="growth-history-change">{entry.change || '变化待补充'}</div>
+                    <div className="muted">{entry.description || '暂无描述'}</div>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1920,6 +2202,22 @@ const ResourceDetail = () => {
         </div>
       )}
 
+      {previewImage && (
+        <div className="modal" onClick={closePreview}>
+          <div className="modal-content image-preview" onClick={(e) => e.stopPropagation()}>
+            <div className="section-header">
+              <h3>{previewLabel || '图片预览'}</h3>
+              <button type="button" className="tab" onClick={closePreview}>
+                关闭
+              </button>
+            </div>
+            <div className="image-preview-body">
+              <img src={previewImage} alt={previewLabel || '预览图'} />
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="resource-footer">
         <div className="resource-footer-actions">
           <button type="button" className="ghost-button" onClick={handleBack}>
@@ -2029,13 +2327,13 @@ const ResourceDetail = () => {
                       {sceneLayout.elements.length === 0 && (
                         <div className="empty">暂无结构图元素，等待分镜AI回传。</div>
                       )}
-                      {sceneLayout.elements.map((element) => {
+                      {sceneLayout.elements.map((element, index) => {
                         const left = `${(element.x || 0) * 100}%`;
                         const top = `${(element.y || 0) * 100}%`;
                         if (element.type === 'character') {
                           return (
                             <div
-                              key={element.id || `${element.name}-${left}`}
+                              key={element.id || `${element.name}-${left}-${index}`}
                               className="scene-node character-node"
                               style={{ left, top, transform: `translate(-50%, -50%) rotate(${element.direction || 0}deg)` }}
                             >
@@ -2045,7 +2343,7 @@ const ResourceDetail = () => {
                         }
                         return (
                           <div
-                            key={element.id || `${element.name}-${left}`}
+                            key={element.id || `${element.name}-${left}-${index}`}
                             className="scene-node"
                             style={{ left, top }}
                           >
@@ -2088,7 +2386,7 @@ const ResourceDetail = () => {
                       <div className="empty">暂无场景版本，请等待分镜头AI回传需求。</div>
                     </div>
                   )}
-                  {sortedSceneVariants.map((variant) => {
+                  {sortedSceneVariants.map((variant, variantIndex) => {
                     const titleParts = [
                       variant.name || resource.name || '场景',
                       variant.season,
@@ -2098,8 +2396,9 @@ const ResourceDetail = () => {
                     const images = variant.images || [];
                     const displayCards = getSceneVariantRequirements(variant);
                     const variantMissing = hasSceneVariantMissing(variant);
+                    const variantKey = variant.id || `${variant.name || 'variant'}-${variantIndex}`;
                     return (
-                      <div key={variant.id} className={`card section-card ${variantMissing ? 'variant-missing' : ''}`}>
+                      <div key={variantKey} className={`card section-card ${variantMissing ? 'variant-missing' : ''}`}>
                         <div className="section-header">
                           <h3>
                             {titleParts.join('-')}
@@ -2113,11 +2412,22 @@ const ResourceDetail = () => {
                           {displayCards.length === 0 && <div className="empty">暂无图片需求。</div>}
                           {displayCards.map((label) => {
                             const image = images.find((img) => img.label === label);
+                            const refKey = `${variant.id}-${label}`;
                             return (
                               <div key={`${variant.id}-${label}`} className="scene-variant-card">
-                                <div className="scene-variant-preview">
+                                <button
+                                  type="button"
+                                  className="scene-variant-preview"
+                                  onClick={() => {
+                                    if (image?.src) {
+                                      openPreview(image.src, label);
+                                    } else {
+                                      sceneInputRefs.current[refKey]?.click();
+                                    }
+                                  }}
+                                >
                                   {image?.src ? <img src={image.src} alt={label} /> : <div className="placeholder">暂无图片</div>}
-                                </div>
+                                </button>
                                 <div className="scene-variant-meta">
                                   <span>{label}</span>
                                   <label className="file-button">
@@ -2125,6 +2435,9 @@ const ResourceDetail = () => {
                                     <input
                                       type="file"
                                       accept="image/*"
+                                      ref={(el) => {
+                                        sceneInputRefs.current[refKey] = el;
+                                      }}
                                       onChange={handleSceneVariantImageUpload(variant.id, label)}
                                     />
                                   </label>
@@ -2141,7 +2454,7 @@ const ResourceDetail = () => {
                             上传
                             <input
                               type="file"
-                              accept="image/*"
+                              accept="image/*,.zip,application/zip,application/x-zip-compressed"
                               multiple
                               onChange={handleSceneVariantBatchUpload(variant.id, displayCards)}
                             />
@@ -2475,33 +2788,56 @@ const ResourceDetail = () => {
                         placeholder="搜索角色或表情"
                       />
                     </div>
-                    <div className="row">
-                      <button type="button" onClick={handleExpressionExportZip} disabled={loading}>
-                        导出表情资源包
-                      </button>
-                      <label className="file-button">
-                        表情规则库-表情-导入/导出-对应角色-上传
-                        <input type="file" accept="application/zip" onChange={handleExpressionImportZip} />
-                      </label>
-                    </div>
                   </div>
                   <div className="expression-transfer-grid">
                     {expressionTransferRequests.length === 0 && (
                       <div className="empty">暂无生图包需求卡片。</div>
                     )}
-                      {expressionTransferRequests.map((item) => (
-                        <div key={item.id} className="expression-transfer-card">
-                          <div className="expression-transfer-preview">
-                            {item.cover ? (
-                              <img src={item.cover} alt={item.name || '生图包'} />
-                            ) : (
-                              <div className="expression-transfer-placeholder">待生成</div>
-                            )}
-                            {!item.cover && <span className="status-dot" />}
-                          </div>
-                          <div className="expression-transfer-title">{item.name || '颜艺生图包'}</div>
-                          <div className="expression-transfer-meta">{item.character || '未指定角色'}</div>
-                          <button type="button">下载生图包</button>
+                    {expressionTransferRequests.map((item) => (
+                      <div key={item.id} className="expression-transfer-card">
+                        {(() => {
+                          const previewSrc = item.image || item.cover || '';
+                          return (
+                            <>
+                        <button
+                          type="button"
+                          className="expression-transfer-preview"
+                          onClick={() => {
+                            if (previewSrc) {
+                              openPreview(previewSrc, item.name || '表情需求');
+                            } else {
+                              expressionTransferRefs.current[item.id]?.click();
+                            }
+                          }}
+                        >
+                          {previewSrc ? (
+                            <img src={previewSrc} alt={item.name || '生图包'} />
+                          ) : (
+                            <div className="expression-transfer-placeholder">待生成</div>
+                          )}
+                          {!previewSrc && <span className="status-dot" />}
+                        </button>
+                        <div className="expression-transfer-title">{item.name || '颜艺生图包'}</div>
+                        <div className="expression-transfer-meta">{item.character || '未指定角色'}</div>
+                        <div className="row">
+                          <label className="file-button">
+                            上传
+                            <input
+                              type="file"
+                              accept="image/*"
+                              ref={(el) => {
+                                expressionTransferRefs.current[item.id] = el;
+                              }}
+                              onChange={handleExpressionTransferUpload(item.id)}
+                            />
+                          </label>
+                          <button type="button" onClick={() => handleExpressionTransferDownload(item)} disabled={!previewSrc}>
+                            下载
+                          </button>
+                        </div>
+                            </>
+                          );
+                        })()}
                       </div>
                     ))}
                   </div>
@@ -2510,7 +2846,95 @@ const ResourceDetail = () => {
               <div className="muted">当前状态：{expressionStatus}</div>
             </div>
           )}
-          {type !== 'characters' && type !== 'scenes' && type !== 'expressions' && (
+          {type === 'props' && (
+            <div className="stack">
+              <div className="card section-card">
+                <div className="section-header">
+                  <h3>道具描述</h3>
+                </div>
+                <textarea
+                  className="large-input"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="补充道具外观、材质、用途等"
+                />
+              </div>
+              <div className="card section-card">
+                <div className="section-header">
+                  <h3>图片管理</h3>
+                </div>
+                {propVariants.length === 0 && <div className="empty">暂无需求，请等待分镜头AI回传。</div>}
+                {propVariants.map((variant) => {
+                  const displayCards = getPropVariantRequirements(variant);
+                  const images = variant.images || [];
+                  return (
+                    <div key={variant.id} className="stack">
+                      <div className="section-header">
+                        <h4>{variant.name || resource.name || '道具'}</h4>
+                      </div>
+                      <div className="scene-variant-grid compact-grid">
+                        {displayCards.length === 0 && <div className="empty">暂无图片需求。</div>}
+                        {displayCards.map((label) => {
+                          const image = images.find((img) => img.label === label);
+                          const refKey = `${variant.id}-${label}-prop`;
+                          return (
+                            <div key={refKey} className="scene-variant-card compact-card">
+                              <button
+                                type="button"
+                                className="scene-variant-preview"
+                                onClick={() => {
+                                  if (image?.src) {
+                                    openPreview(image.src, label);
+                                  } else {
+                                    sceneInputRefs.current[refKey]?.click();
+                                  }
+                                }}
+                              >
+                                {image?.src ? (
+                                  <img src={image.src} alt={label} />
+                                ) : (
+                                  <div className="placeholder">暂无图片</div>
+                                )}
+                              </button>
+                              <div className="scene-variant-meta">
+                                <span>{label}</span>
+                                <label className="file-button">
+                                  上传
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    ref={(el) => {
+                                      sceneInputRefs.current[refKey] = el;
+                                    }}
+                                    onChange={handlePropVariantImageUpload(variant.id, label)}
+                                  />
+                                </label>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="row align-right">
+                        <button type="button" onClick={() => handlePropVariantExport(variant)}>
+                          下载
+                        </button>
+                        <label className="file-button">
+                          上传
+                          <input
+                            type="file"
+                            accept="image/*,.zip,application/zip,application/x-zip-compressed"
+                            multiple
+                            onChange={handlePropVariantBatchUpload(variant.id, displayCards)}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {type !== 'characters' && type !== 'scenes' && type !== 'expressions' && type !== 'props' && (
             <div className="row">
               <div>
                 <p>上传 zip（自动解压图片）</p>
@@ -2565,7 +2989,13 @@ const ResourceDetail = () => {
                 const imageKey = img?.id || imageSrc || idx;
                 return (
                   <div key={imageKey} className="item-card">
-                    <img src={imageSrc} alt={`res-${idx}`} className="cover checkerboard" />
+                    <button
+                      type="button"
+                      className="cover checkerboard"
+                      onClick={() => openPreview(imageSrc, resource.name)}
+                    >
+                      <img src={imageSrc} alt={`res-${idx}`} />
+                    </button>
                     <button
                       className="danger"
                       onClick={() =>

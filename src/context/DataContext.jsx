@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
+import { getImageById, storeImageData } from '../utils/imageStore';
 
 const DataContext = createContext();
 const STORAGE_KEY = 'novel-storyboard-data';
@@ -38,6 +39,7 @@ export const DataProvider = ({ children }) => {
             outlineUpdatedAt: novel.outlineUpdatedAt || null,
             outlineStatus: novel.outlineStatus || '',
             outlineVersions: novel.outlineVersions || [],
+            outlineSelectionHistory: novel.outlineSelectionHistory || [],
             relationshipGraph: novel.relationshipGraph || { nodes: [], relations: [] },
             chapters: (novel.chapters || []).map((chapter) => ({
               id: chapter.id,
@@ -56,9 +58,76 @@ export const DataProvider = ({ children }) => {
     return defaultData;
   });
 
+  const hasIdbRef = (value) => typeof value === 'string' && value.startsWith('idb:');
+  const isDataUrl = (value) => typeof value === 'string' && value.startsWith('data:');
+
+  const replaceImagesWithRefs = async (value) => {
+    if (Array.isArray(value)) {
+      return Promise.all(value.map((entry) => replaceImagesWithRefs(entry)));
+    }
+    if (value && typeof value === 'object') {
+      const entries = await Promise.all(
+        Object.entries(value).map(async ([key, entry]) => [key, await replaceImagesWithRefs(entry)])
+      );
+      return Object.fromEntries(entries);
+    }
+    if (isDataUrl(value)) {
+      const ref = await storeImageData(value);
+      return ref;
+    }
+    return value;
+  };
+
+  const hydrateImagesFromRefs = async (value) => {
+    if (Array.isArray(value)) {
+      return Promise.all(value.map((entry) => hydrateImagesFromRefs(entry)));
+    }
+    if (value && typeof value === 'object') {
+      const entries = await Promise.all(
+        Object.entries(value).map(async ([key, entry]) => [key, await hydrateImagesFromRefs(entry)])
+      );
+      return Object.fromEntries(entries);
+    }
+    if (hasIdbRef(value)) {
+      const imageId = value.replace('idb:', '');
+      const stored = await getImageById(imageId);
+      return stored || value;
+    }
+    return value;
+  };
+
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    let cancelled = false;
+    const persist = async () => {
+      const dataForStorage = await replaceImagesWithRefs(data);
+      if (cancelled) return;
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(dataForStorage));
+      } catch (error) {
+        console.warn('Failed to persist data to localStorage', error);
+      }
+    };
+    persist();
+    return () => {
+      cancelled = true;
+    };
   }, [data]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const hydrate = async () => {
+      const containsRefs = JSON.stringify(data).includes('"idb:');
+      if (!containsRefs) return;
+      const hydrated = await hydrateImagesFromRefs(data);
+      if (!cancelled) {
+        setData(hydrated);
+      }
+    };
+    hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const addNovel = (title, cover = '') => {
     const newNovel = {
@@ -73,6 +142,7 @@ export const DataProvider = ({ children }) => {
       outlineUpdatedAt: null,
       outlineStatus: '未生成',
       outlineVersions: [],
+      outlineSelectionHistory: [],
       relationshipGraph: { nodes: [], relations: [] }
     };
     setData((prev) => ({ ...prev, novels: [...prev.novels, newNovel] }));
@@ -225,7 +295,8 @@ export const DataProvider = ({ children }) => {
             prohibitions: '',
             expressionAssets: [],
             expressionRules: [],
-            expressionHistory: []
+            expressionHistory: [],
+            expressionTransferRequests: []
           }
         }
       };

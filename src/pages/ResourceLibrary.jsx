@@ -26,7 +26,8 @@ const ResourceLibrary = () => {
   const initialTab = validTabs.includes(queryTab) ? queryTab : 'characters';
   const [activeTab, setActiveTab] = useState(initialTab);
   const [tagFilter, setTagFilter] = useState('');
-  const [selectedNovelId, setSelectedNovelId] = useState(queryNovelId);
+  const storedNovelId = localStorage.getItem('resource-library-selected-novel') || '';
+  const [selectedNovelId, setSelectedNovelId] = useState(queryNovelId || storedNovelId);
 
   const novels = data.novels || [];
 
@@ -42,10 +43,15 @@ const ResourceLibrary = () => {
     }
     if (queryNovelId) {
       setSelectedNovelId(queryNovelId);
+      localStorage.setItem('resource-library-selected-novel', queryNovelId);
       return;
     }
     if (!selectedNovelId) {
-      setSelectedNovelId(novels[0]?.id || '');
+      const fallback = novels[0]?.id || '';
+      setSelectedNovelId(fallback);
+      if (fallback) {
+        localStorage.setItem('resource-library-selected-novel', fallback);
+      }
     }
   }, [novels, queryNovelId, selectedNovelId]);
 
@@ -70,7 +76,44 @@ const ResourceLibrary = () => {
   const resolveCoverImage = (res) => {
     if (activeTab === 'characters') {
       const firstImage = res.images?.[0];
-      return getLatestAsset(res)?.src || res.meta?.viewImages?.front || firstImage?.src || firstImage;
+      const formViews = res.form?.[0]?.viewAssets || [];
+      const front = formViews.find((asset) => asset.viewAngle === '正面');
+      return (
+        getLatestAsset(res)?.src ||
+        front?.src ||
+        formViews?.[0]?.src ||
+        res.meta?.viewAssets?.[0]?.src ||
+        firstImage?.src ||
+        firstImage
+      );
+    }
+    if (activeTab === 'expressions') {
+      const requestImage =
+        res.meta?.expressionTransferRequests?.find((item) => item.image || item.cover)?.image ||
+        res.meta?.expressionTransferRequests?.find((item) => item.image || item.cover)?.cover ||
+        '';
+      if (requestImage) return requestImage;
+      const previewCharacter = data.resources.characters?.[0];
+      const previewImage =
+        previewCharacter?.form?.[0]?.viewAssets?.find((asset) => asset.viewAngle === '正面')?.src ||
+        previewCharacter?.form?.[0]?.viewAssets?.[0]?.src ||
+        previewCharacter?.meta?.viewAssets?.[0]?.src ||
+        previewCharacter?.images?.[0];
+      return previewImage || '';
+    }
+    if (activeTab === 'scenes') {
+      const firstImage = res.images?.[0];
+      const variantImage =
+        res.meta?.sceneVariants?.[0]?.images?.[0]?.src ||
+        res.meta?.sceneVariants?.[0]?.images?.[0];
+      return variantImage || firstImage?.src || firstImage;
+    }
+    if (activeTab === 'props') {
+      const firstImage = res.images?.[0];
+      const variantImage =
+        res.meta?.propVariants?.[0]?.images?.[0]?.src ||
+        res.meta?.propVariants?.[0]?.images?.[0];
+      return variantImage || firstImage?.src || firstImage;
     }
     const firstImage = res.images?.[0];
     return firstImage?.src || firstImage;
@@ -119,7 +162,12 @@ const ResourceLibrary = () => {
             选择小说
             <select
               value={selectedNovelId}
-              onChange={(e) => setSelectedNovelId(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setSelectedNovelId(next);
+                localStorage.setItem('resource-library-selected-novel', next);
+                navigate(`/resources?tab=characters&novelId=${next}`);
+              }}
               disabled={novels.length === 0}
             >
               {novels.length === 0 && <option value="">暂无小说</option>}

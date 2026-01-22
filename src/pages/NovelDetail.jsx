@@ -124,6 +124,7 @@ const NovelDetail = () => {
   const [promptModalOpen, setPromptModalOpen] = useState(false);
   const [outlineViewOpen, setOutlineViewOpen] = useState(false);
   const [outlineEditMode, setOutlineEditMode] = useState(false);
+  const [outlineViewTab, setOutlineViewTab] = useState('outline');
   const [relationshipModalOpen, setRelationshipModalOpen] = useState(false);
   const [uploadingNovel, setUploadingNovel] = useState(false);
   const [outlineSelections, setOutlineSelections] = useState(buildInitialSelections);
@@ -258,10 +259,19 @@ const NovelDetail = () => {
 
   const handleSavePrompt = () => {
     const now = new Date().toISOString();
+    const historyEntry = {
+      id: crypto.randomUUID(),
+      createdAt: now,
+      selections: outlineSelections,
+      summary: outlineSummary,
+      prompt: outlinePromptDraft.trim()
+    };
+    const nextHistory = [...(novel.outlineSelectionHistory || []), historyEntry];
     updateNovel(novelId, {
       outlinePrompt: outlinePromptDraft.trim(),
       outlineGeneratedAt: now,
-      outlineStatus: outlinePromptDraft.trim() ? '已生成' : '未生成'
+      outlineStatus: outlinePromptDraft.trim() ? '已生成' : '未生成',
+      outlineSelectionHistory: nextHistory
     });
     setPromptModalOpen(false);
   };
@@ -362,7 +372,8 @@ const NovelDetail = () => {
         title: novel.title,
         outlinePrompt: novel.outlinePrompt || '',
         outlineText: novel.outlineText || '',
-        outlineVersions: novel.outlineVersions || []
+        outlineVersions: novel.outlineVersions || [],
+        outlineSelectionHistory: novel.outlineSelectionHistory || []
       },
       chapters: (novel.chapters || []).map((chapter) => ({
         id: chapter.id,
@@ -402,10 +413,11 @@ const NovelDetail = () => {
         parsed = JSON.parse(parsed);
       }
       const payloadNovel = parsed.novel || parsed;
-      if (payloadNovel.outlineText || payloadNovel.outlinePrompt) {
+      if (payloadNovel.outlineText || payloadNovel.outlinePrompt || payloadNovel.outlineSelectionHistory) {
         updateNovel(novelId, {
           outlineText: payloadNovel.outlineText || novel.outlineText || '',
-          outlinePrompt: payloadNovel.outlinePrompt || novel.outlinePrompt || ''
+          outlinePrompt: payloadNovel.outlinePrompt || novel.outlinePrompt || '',
+          outlineSelectionHistory: payloadNovel.outlineSelectionHistory || novel.outlineSelectionHistory || []
         });
       }
       if (parsed.relationshipGraph) {
@@ -455,16 +467,18 @@ const NovelDetail = () => {
         </div>
         <div className="row">
           <Link to="/" className="tab">返回书架</Link>
-          <button
-            type="button"
-            onClick={() => {
-              setOutlineSelections(buildInitialSelections());
-              setOutlineSummary([]);
-              setOutlineModalOpen(true);
-            }}
-          >
-            生成大纲
-          </button>
+          {!novel.outlineText && (
+            <button
+              type="button"
+              onClick={() => {
+                setOutlineSelections(buildInitialSelections());
+                setOutlineSummary([]);
+                setOutlineModalOpen(true);
+              }}
+            >
+              生成大纲
+            </button>
+          )}
           {outlineStatus === '已生成' && !novel.outlineText && (
             <button
               type="button"
@@ -485,6 +499,7 @@ const NovelDetail = () => {
                 setOutlineDraft(novel.outlineText || '');
                 setOutlineViewOpen(true);
                 setOutlineEditMode(true);
+                setOutlineViewTab('outline');
               }}
             >
               上传大纲
@@ -498,6 +513,7 @@ const NovelDetail = () => {
                 setOutlineDraft(novel.outlineText || '');
                 setOutlineViewOpen(true);
                 setOutlineEditMode(false);
+                setOutlineViewTab('outline');
               }}
             >
               查看大纲
@@ -723,32 +739,166 @@ const NovelDetail = () => {
                 </button>
               </div>
             </div>
-            {outlineEditMode ? (
+            <div className="tabs">
+              {[
+                { key: 'outline', label: '小说大纲' },
+                { key: 'history', label: '大纲选择历史' }
+              ].map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  className={outlineViewTab === tab.key ? 'tab active' : 'tab'}
+                  onClick={() => setOutlineViewTab(tab.key)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            {outlineViewTab === 'outline' && (
+              <>
+                {outlineEditMode ? (
+                  <div className="stack">
+                    <textarea
+                      className="large-input"
+                      value={outlineDraft}
+                      onChange={(e) => setOutlineDraft(e.target.value)}
+                      placeholder="请输入小说大纲"
+                    />
+                    <div className="row">
+                      <button type="button" className="primary" onClick={handleSaveOutline}>
+                        保存
+                      </button>
+                      <button
+                        type="button"
+                        className="tab"
+                        onClick={() => {
+                          setOutlineDraft(novel.outlineText || '');
+                          setOutlineEditMode(false);
+                        }}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="readonly-field multi-line">{outlineDraft || '暂无大纲'}</div>
+                )}
+              </>
+            )}
+            {outlineViewTab === 'history' && (
               <div className="stack">
-                <textarea
-                  className="large-input"
-                  value={outlineDraft}
-                  onChange={(e) => setOutlineDraft(e.target.value)}
-                  placeholder="请输入小说大纲"
-                />
-                <div className="row">
-                  <button type="button" className="primary" onClick={handleSaveOutline}>
-                    保存
-                  </button>
-                  <button
-                    type="button"
-                    className="tab"
-                    onClick={() => {
-                      setOutlineDraft(novel.outlineText || '');
-                      setOutlineEditMode(false);
-                    }}
-                  >
-                    取消
-                  </button>
+                <div className="card subtle">
+                  <div className="section-header">
+                    <h4>提示词选择历史</h4>
+                  </div>
+                  {(novel.outlineSelectionHistory || []).length === 0 && (
+                    <div className="empty">暂无提示词选择记录。</div>
+                  )}
+                  {(novel.outlineSelectionHistory || []).map((entry) => (
+                    <div key={entry.id} className="card subtle">
+                      <div className="section-header">
+                        <div>
+                          <div className="label">记录时间</div>
+                          <div className="muted">{entry.createdAt}</div>
+                        </div>
+                        <div className="row">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!entry.prompt) return;
+                              try {
+                                await navigator.clipboard.writeText(entry.prompt);
+                                alert('提示词已复制');
+                              } catch (e) {
+                                alert('复制失败，请手动复制');
+                              }
+                            }}
+                          >
+                            复制提示词
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const blob = new Blob([JSON.stringify(entry, null, 2)], {
+                                type: 'application/json'
+                              });
+                              const url = URL.createObjectURL(blob);
+                              const link = document.createElement('a');
+                              link.href = url;
+                              link.download = `outline-selection-${entry.id}.json`;
+                              link.click();
+                              URL.revokeObjectURL(url);
+                            }}
+                          >
+                            导出 JSON
+                          </button>
+                        </div>
+                      </div>
+                      <div className="prompt-summary">
+                        {(entry.summary || []).map((item) => (
+                          <div key={item.id} className="prompt-summary-item">
+                            <div className="label">{item.title}</div>
+                            <div className="muted">{item.answer}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="card subtle">
+                  <div className="section-header">
+                    <h4>大纲文本历史</h4>
+                  </div>
+                  {(novel.outlineVersions || []).length === 0 && (
+                    <div className="empty">暂无大纲版本记录。</div>
+                  )}
+                  {(novel.outlineVersions || []).map((entry) => (
+                    <div key={`outline-${entry.version}`} className="card subtle">
+                      <div className="section-header">
+                        <div>
+                          <div className="label">版本 {entry.version}</div>
+                          <div className="muted">{entry.updatedAt}</div>
+                        </div>
+                        <div className="row">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!entry.outlineText) return;
+                              try {
+                                await navigator.clipboard.writeText(entry.outlineText);
+                                alert('大纲已复制');
+                              } catch (e) {
+                                alert('复制失败，请手动复制');
+                              }
+                            }}
+                          >
+                            复制大纲
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const blob = new Blob([JSON.stringify(entry, null, 2)], {
+                                type: 'application/json'
+                              });
+                              const url = URL.createObjectURL(blob);
+                              const link = document.createElement('a');
+                              link.href = url;
+                              link.download = `outline-version-${entry.version}.json`;
+                              link.click();
+                              URL.revokeObjectURL(url);
+                            }}
+                          >
+                            导出 JSON
+                          </button>
+                        </div>
+                      </div>
+                      <div className="readonly-field multi-line">
+                        {entry.outlineText || '暂无内容'}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ) : (
-              <div className="readonly-field multi-line">{outlineDraft || '暂无大纲'}</div>
             )}
           </div>
         </div>
@@ -773,18 +923,102 @@ const NovelDetail = () => {
               </div>
             </div>
             <div className="stack">
-              {(novel.relationshipGraph?.relations || []).length === 0 && (
-                <div className="empty">暂无关系网数据，可导 JSON 进行展示。</div>
-              )}
-              {(novel.relationshipGraph?.relations || []).map((rel, index) => (
-                <div key={`${rel.source || rel.sourceId || 'source'}-${index}`} className="card subtle">
-                  <div className="label">
-                    {rel.source || rel.sourceId || rel.from || rel.fromId || rel.sourceName || '未知角色'} ⇄{' '}
-                    {rel.target || rel.targetId || rel.to || rel.toId || rel.targetName || '未知角色'}
+              {(() => {
+                const graph = novel.relationshipGraph || { nodes: [], relations: [] };
+                const relations = graph.relations || [];
+                const rawNodes = graph.nodes || [];
+                const relationNodes =
+                  rawNodes.length > 0
+                    ? rawNodes
+                    : Array.from(
+                        new Set(
+                          relations.flatMap((rel) => [
+                            rel.source,
+                            rel.sourceId,
+                            rel.from,
+                            rel.fromId,
+                            rel.sourceName,
+                            rel.target,
+                            rel.targetId,
+                            rel.to,
+                            rel.toId,
+                            rel.targetName
+                          ])
+                        )
+                      )
+                        .filter(Boolean)
+                        .map((name) => ({ id: name, name }));
+                if (relations.length === 0) {
+                  return <div className="empty">暂无关系网数据，可导 JSON 进行展示。</div>;
+                }
+                const characters = data.resources.characters || [];
+                const findImage = (node) => {
+                  const match = characters.find(
+                    (character) => character.id === node.id || character.name === node.name
+                  );
+                  if (!match) return '';
+                  const formViews = match.form?.[0]?.viewAssets || [];
+                  const metaViews = match.meta?.viewAssets || [];
+                  const front = formViews.find((asset) => asset.viewAngle === '正面');
+                  return front?.src || formViews?.[0]?.src || metaViews?.[0]?.src || match.images?.[0] || '';
+                };
+                const positions = relationNodes.map((node, index) => {
+                  const angle = (index / relationNodes.length) * Math.PI * 2;
+                  return {
+                    ...node,
+                    key: node.id || node.name || `node-${index}`,
+                    image: findImage(node),
+                    position: {
+                      x: 50 + 38 * Math.cos(angle),
+                      y: 50 + 38 * Math.sin(angle)
+                    }
+                  };
+                });
+                const nodeMap = new Map(
+                  positions.map((node) => [
+                    String(node.id || node.name),
+                    { x: node.position.x, y: node.position.y }
+                  ])
+                );
+                return (
+                  <div className="relation-board">
+                    <div className="relation-network">
+                      <svg className="relation-lines" viewBox="0 0 100 100" preserveAspectRatio="none">
+                        {relations.map((rel, index) => {
+                          const source =
+                            rel.source || rel.sourceId || rel.from || rel.fromId || rel.sourceName || '';
+                          const target =
+                            rel.target || rel.targetId || rel.to || rel.toId || rel.targetName || '';
+                          const sourcePos = nodeMap.get(String(source));
+                          const targetPos = nodeMap.get(String(target));
+                          if (!sourcePos || !targetPos) return null;
+                          return (
+                            <line
+                              key={`${source}-${target}-${index}`}
+                              x1={sourcePos.x}
+                              y1={sourcePos.y}
+                              x2={targetPos.x}
+                              y2={targetPos.y}
+                            />
+                          );
+                        })}
+                      </svg>
+                      {positions.map((node) => (
+                        <div
+                          key={node.key}
+                          className="relation-node rich"
+                          style={{ left: `${node.position.x}%`, top: `${node.position.y}%` }}
+                        >
+                          <div className="relation-node-avatar">
+                            {node.image ? <img src={node.image} alt={node.name} /> : <div className="placeholder" />}
+                          </div>
+                          <div className="relation-node-name">{node.name}</div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="muted">{rel.relation || '关系待补充'}</div>
-                </div>
-              ))}
+                );
+              })()}
             </div>
           </div>
         </div>
