@@ -61,6 +61,46 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const props = data.resources.props || [];
   const novel = (data.novels || []).find((item) => item.id === novelId);
 
+  const getLatestAsset = (res) => {
+    const assets = res.assets || [];
+    if (!assets.length) return null;
+    return assets
+      .slice()
+      .sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0))[0];
+  };
+
+  const resolveResourceCover = (type, res) => {
+    if (!res) return '';
+    if (type === 'characters') {
+      const firstImage = res.images?.[0];
+      const formViews = res.form?.[0]?.viewAssets || [];
+      const front = formViews.find((asset) => asset.viewAngle === '正面');
+      return (
+        getLatestAsset(res)?.src ||
+        front?.src ||
+        formViews?.[0]?.src ||
+        res.meta?.viewAssets?.[0]?.src ||
+        firstImage?.src ||
+        firstImage ||
+        ''
+      );
+    }
+    if (type === 'scenes') {
+      const firstImage = res.images?.[0];
+      const variantImage =
+        res.meta?.sceneVariants?.[0]?.images?.[0]?.src || res.meta?.sceneVariants?.[0]?.images?.[0];
+      return variantImage || firstImage?.src || firstImage || '';
+    }
+    if (type === 'props') {
+      const firstImage = res.images?.[0];
+      const variantImage =
+        res.meta?.propVariants?.[0]?.images?.[0]?.src || res.meta?.propVariants?.[0]?.images?.[0];
+      return variantImage || firstImage?.src || firstImage || '';
+    }
+    const firstImage = res.images?.[0];
+    return firstImage?.src || firstImage || '';
+  };
+
   useEffect(() => {
     let active = true;
     getExpressionForms().then((forms) => {
@@ -361,10 +401,12 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     updateShotField(shotId, field, next);
   };
 
-  const renderResourceTiles = (shot, field, items) => (
+  const renderResourceTiles = (shot, field, items, resourceType) => (
     <div className="resource-grid">
       {items.map((item) => {
         const selected = field === 'scene' ? shot.scene === item.name : (shot[field] || []).includes(item.name);
+        const coverImage = resolveResourceCover(resourceType, item);
+        const hasCover = Boolean(coverImage);
         return (
           <button
             key={item.id || item.name}
@@ -373,7 +415,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
             onClick={() => toggleResourceSelection(shot.id, field, item.name)}
           >
             <div className="resource-cover">
-              {item.images?.[0] ? <img src={item.images[0]} alt={item.name} /> : <div className="cover-placeholder">无封面</div>}
+              {hasCover ? <img src={coverImage} alt={item.name} /> : <div className="cover-placeholder">无封面</div>}
             </div>
             <div className="resource-name">{item.name}</div>
           </button>
@@ -570,9 +612,10 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                               </button>
                               {resourceSection === section.key && (
                                 <div className="resource-panel">
-                                  {section.key === 'characters' && renderResourceTiles(shot, 'characters', characters)}
-                                  {section.key === 'scenes' && renderResourceTiles(shot, 'scene', scenes)}
-                                  {section.key === 'props' && renderResourceTiles(shot, 'props', props)}
+                                  {section.key === 'characters' &&
+                                    renderResourceTiles(shot, 'characters', characters, 'characters')}
+                                  {section.key === 'scenes' && renderResourceTiles(shot, 'scene', scenes, 'scenes')}
+                                  {section.key === 'props' && renderResourceTiles(shot, 'props', props, 'props')}
                                 </div>
                               )}
                             </div>

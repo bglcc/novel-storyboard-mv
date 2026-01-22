@@ -861,7 +861,7 @@ const ResourceDetail = () => {
       }));
       setExpressionRuleText(importedRuleText);
     } catch (e) {
-      alert('导入失败，请检查 ZIP 文件');
+      alert('导入失败请检查 ZIP 文件');
     } finally {
       setLoading(false);
     }
@@ -870,6 +870,7 @@ const ResourceDetail = () => {
   const buildUpdatedResource = () => {
     const expressionAssets = getExpressionAssets();
     const expressionStatus = type === 'expressions' ? getExpressionStatus() : resource.status;
+    const characterStatus = type === 'characters' ? getCharacterStatus() : resource.status;
     const expressionImages = type === 'expressions' ? syncExpressionImages(expressionAssets) : resource.images || [];
     const updatedMeta = type === 'expressions' ? { ...meta, expressionRuleText } : meta;
     const sceneHasImages =
@@ -884,7 +885,7 @@ const ResourceDetail = () => {
         : false;
     const nextStatus =
       type === 'characters'
-        ? getCharacterStatus()
+        ? characterStatus
         : type === 'expressions'
           ? expressionStatus
           : type === 'scenes'
@@ -897,7 +898,9 @@ const ResourceDetail = () => {
                 : '待补齐'
               : resource.status;
     const nextAvailable =
-      type === 'expressions'
+      type === 'characters'
+        ? characterStatus === '已完成'
+        : type === 'expressions'
         ? expressionStatus === '已完成'
         : type === 'scenes'
           ? sceneHasImages
@@ -1839,7 +1842,7 @@ const ResourceDetail = () => {
               </div>
             </div>
             {viewList.length === 0 ? (
-              <div className="empty">暂无视角需求，请等待分镜头AI回传。</div>
+              <div className="empty">暂无视需求，请等待分镜头AI回传。</div>
             ) : (
               <div className="portrait-grid">
                 {viewList.map((viewAngle) => {

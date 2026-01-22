@@ -235,6 +235,7 @@
   flex-direction: column;
   gap: 6px;
   background: #fff;
+  color: #111827;
   cursor: pointer;
 }
 
