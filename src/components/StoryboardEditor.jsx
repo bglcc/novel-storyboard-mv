@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useData } from '../context/DataContext';
 import { getExpressionForms } from '../utils/expressionFormsDb';
 
@@ -36,6 +36,7 @@ const emptyShot = (idx) => ({
   characters: [],
   props: [],
   previewImage: '',
+  composition: [],
   keyframes: [],
   audioDialogue: '',
   audioTone: '',
@@ -53,6 +54,10 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const [pendingDelete, setPendingDelete] = useState(null);
   const [pendingKeyframeDelete, setPendingKeyframeDelete] = useState(null);
   const [expressionForms, setExpressionForms] = useState([]);
+  const [previewEditorShotId, setPreviewEditorShotId] = useState(null);
+  const [activeElementId, setActiveElementId] = useState(null);
+  const [dragging, setDragging] = useState(null);
+  const previewCanvasRef = useRef(null);
 
   const scenes = data.resources.scenes || [];
   const characters = (data.resources.characters || []).filter(
@@ -110,6 +115,31 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!dragging) return;
+    const handleMove = (event) => {
+      const container = previewCanvasRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / rect.width) * 100;
+      const y = ((event.clientY - rect.top) / rect.height) * 100;
+      setDragging((prev) => {
+        if (!prev) return null;
+        const clampedX = Math.max(0, Math.min(100, x));
+        const clampedY = Math.max(0, Math.min(100, y));
+        updateComposition(prev.shotId, prev.elementId, { x: clampedX, y: clampedY });
+        return prev;
+      });
+    };
+    const handleUp = () => setDragging(null);
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, [dragging]);
 
   const getActiveTab = (shotId) => activeTabs[shotId] || 'frame';
   const getSideTab = (shotId) => sideTabsState[shotId] || 'info';
@@ -199,6 +229,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           characters: shot.characters || [],
           props: shot.props || [],
           previewImage: shot.previewImage || '',
+          composition: shot.composition || shot.layout || [],
           keyframes: Array.isArray(shot.keyframes) ? shot.keyframes : [],
           audioDialogue: shot.audioDialogue || '',
           audioTone: shot.audioTone || '',
@@ -219,6 +250,83 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       shot.id === shotId ? { ...shot, [field]: value, shotNumber: `${idx + 1}` } : shot
     );
     updateShots(updated);
+  };
+
+  const updateComposition = (shotId, elementId, changes) => {
+    const updated = (chapter.storyboards || []).map((shot) => {
+      if (shot.id !== shotId) return shot;
+      const next = (shot.composition || []).map((element) =>
+        element.id === elementId ? { ...element, ...changes } : element
+      );
+      return { ...shot, composition: next };
+    });
+    updateShots(updated);
+  };
+
+  const addCompositionElement = (shotId, element) => {
+    const updated = (chapter.storyboards || []).map((shot) => {
+      if (shot.id !== shotId) return shot;
+      const next = [...(shot.composition || []), element];
+      return { ...shot, composition: next };
+    });
+    updateShots(updated);
+    setActiveElementId(element.id);
+  };
+
+  const removeCompositionElement = (shotId, elementId) => {
+    const updated = (chapter.storyboards || []).map((shot) => {
+      if (shot.id !== shotId) return shot;
+      const next = (shot.composition || []).filter((element) => element.id !== elementId);
+      return { ...shot, composition: next };
+    });
+    updateShots(updated);
+    setActiveElementId((prev) => (prev === elementId ? null : prev));
+  };
+
+  const handleOpenPreviewEditor = (shotId) => {
+    setPreviewEditorShotId(shotId);
+    const shot = (chapter.storyboards || []).find((item) => item.id === shotId);
+    setActiveElementId(shot?.composition?.[0]?.id || null);
+  };
+
+  const handleExportComposition = async (shot) => {
+    const items = shot.composition || [];
+    if (!items.length) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = 900;
+    canvas.height = 1600;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const images = await Promise.all(
+      items.map(
+        (item) =>
+          new Promise((resolve) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => resolve({ item, img });
+            img.onerror = () => resolve({ item, img: null });
+            img.src = item.src;
+          })
+      )
+    );
+    images.forEach(({ item, img }) => {
+      if (!img) return;
+      const widthPx = (canvas.width * (item.width || 30)) / 100 * (item.scale || 1);
+      const ratio = img.height / img.width || 1;
+      const heightPx = widthPx * ratio;
+      const x = (canvas.width * (item.x || 50)) / 100;
+      const y = (canvas.height * (item.y || 50)) / 100;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(((item.rotate || 0) * Math.PI) / 180);
+      ctx.drawImage(img, -widthPx / 2, -heightPx / 2, widthPx, heightPx);
+      ctx.restore();
+    });
+    const url = canvas.toDataURL('image/png');
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${chapter.title || 'storyboard'}-preview-${shot.shotNumber}.png`;
+    link.click();
   };
 
   const handleBatchUpload = (event) => {
@@ -425,6 +533,50 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     </div>
   );
 
+  const renderCompositionPreview = (shot, interactive = false) => {
+    const composition = shot.composition || [];
+    if (!composition.length) return null;
+    return (
+      <div className={`composition-canvas ${interactive ? 'interactive' : ''}`} ref={interactive ? previewCanvasRef : null}>
+        {composition.map((element) => {
+          const isActive = element.id === activeElementId && interactive;
+          return (
+            <button
+              type="button"
+              key={element.id}
+              className={isActive ? 'composition-item active' : 'composition-item'}
+              style={{
+                left: `${element.x ?? 50}%`,
+                top: `${element.y ?? 50}%`,
+                width: `${element.width ?? 30}%`,
+                transform: `translate(-50%, -50%) scale(${element.scale ?? 1}) rotate(${element.rotate ?? 0}deg)`
+              }}
+              onMouseDown={
+                interactive
+                  ? (event) => {
+                      event.stopPropagation();
+                      setActiveElementId(element.id);
+                      setDragging({ shotId: shot.id, elementId: element.id });
+                    }
+                  : undefined
+              }
+              onClick={
+                interactive
+                  ? (event) => {
+                      event.stopPropagation();
+                      setActiveElementId(element.id);
+                    }
+                  : undefined
+              }
+            >
+              <img src={element.src} alt={element.name || '元素'} />
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
   return (
     <div className="card">
       <div className="space-between">
@@ -456,9 +608,15 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           const isFrameTab = activeTab === 'frame' || isKeyframeTab(activeTab);
           return (
             <div key={shot.id} className="shot-card">
-              <div className="shot-preview">
-                {shot.previewImage ? <img src={shot.previewImage} alt="预览" /> : <div className="cover-placeholder">无预览图</div>}
-              </div>
+              <button type="button" className="shot-preview" onClick={() => handleOpenPreviewEditor(shot.id)}>
+                {shot.composition?.length ? (
+                  renderCompositionPreview(shot)
+                ) : shot.previewImage ? (
+                  <img src={shot.previewImage} alt="预览" />
+                ) : (
+                  <div className="cover-placeholder">无预览图</div>
+                )}
+              </button>
               <div className="shot-body">
                 <div className="shot-header">
                   <div className="shot-number">镜头 {shot.shotNumber}</div>
@@ -797,6 +955,151 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                 取消
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {previewEditorShotId && (
+        <div className="modal">
+          <div className="modal-content preview-editor">
+            {(() => {
+              const shot = (chapter.storyboards || []).find((item) => item.id === previewEditorShotId);
+              if (!shot) return null;
+              const composition = shot.composition || [];
+              const activeElement = composition.find((item) => item.id === activeElementId);
+              return (
+                <>
+                  <div className="space-between">
+                    <h4>拼图草图编辑（镜头 {shot.shotNumber}）</h4>
+                    <div className="row">
+                      <button type="button" onClick={() => handleExportComposition(shot)}>
+                        导出草图
+                      </button>
+                      <button type="button" className="tab" onClick={() => setPreviewEditorShotId(null)}>
+                        关闭
+                      </button>
+                    </div>
+                  </div>
+                  <div className="preview-editor-body">
+                    <div className="preview-editor-canvas" onClick={() => setActiveElementId(null)}>
+                      {renderCompositionPreview(shot, true)}
+                      {!composition.length && <div className="empty">暂无拼图元素，请从右侧资源添加。</div>}
+                    </div>
+                    <div className="preview-editor-panel">
+                      <div className="panel-section">
+                        <h5>资源添加</h5>
+                        {resourceSections.map((section) => (
+                          <div key={section.key} className="resource-section">
+                            <div className="resource-section-header">{section.label}</div>
+                            <div className="resource-panel">
+                              {(section.key === 'characters' ? characters : section.key === 'scenes' ? scenes : props).map(
+                                (item) => {
+                                  const coverImage = resolveResourceCover(section.key, item);
+                                  return (
+                                    <button
+                                      key={item.id || item.name}
+                                      type="button"
+                                      className="resource-card"
+                                      onClick={() =>
+                                        addCompositionElement(shot.id, {
+                                          id: crypto.randomUUID(),
+                                          type: section.key,
+                                          name: item.name,
+                                          src: coverImage,
+                                          x: 50,
+                                          y: 50,
+                                          scale: 1,
+                                          rotate: 0,
+                                          width: section.key === 'scenes' ? 100 : 35
+                                        })
+                                      }
+                                      disabled={!coverImage}
+                                    >
+                                      <div className="resource-cover">
+                                        {coverImage ? <img src={coverImage} alt={item.name} /> : <div className="cover-placeholder">无封面</div>}
+                                      </div>
+                                      <div className="resource-name">{item.name}</div>
+                                    </button>
+                                  );
+                                }
+                              )}
+                              {(section.key === 'characters' ? characters : section.key === 'scenes' ? scenes : props).length === 0 && (
+                                <div className="empty">暂无资源，请先在资源库添加。</div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="panel-section">
+                        <h5>元素编辑</h5>
+                        {activeElement ? (
+                          <>
+                            <div className="element-title">
+                              当前元素：{activeElement.name || activeElement.type}
+                            </div>
+                            <label>
+                              缩放
+                              <input
+                                type="range"
+                                min="0.2"
+                                max="3"
+                                step="0.05"
+                                value={activeElement.scale ?? 1}
+                                onChange={(event) =>
+                                  updateComposition(shot.id, activeElement.id, {
+                                    scale: Number(event.target.value)
+                                  })
+                                }
+                              />
+                            </label>
+                            <label>
+                              旋转
+                              <input
+                                type="range"
+                                min="-180"
+                                max="180"
+                                step="1"
+                                value={activeElement.rotate ?? 0}
+                                onChange={(event) =>
+                                  updateComposition(shot.id, activeElement.id, {
+                                    rotate: Number(event.target.value)
+                                  })
+                                }
+                              />
+                            </label>
+                            <label>
+                              尺寸
+                              <input
+                                type="range"
+                                min="10"
+                                max="100"
+                                step="1"
+                                value={activeElement.width ?? 30}
+                                onChange={(event) =>
+                                  updateComposition(shot.id, activeElement.id, {
+                                    width: Number(event.target.value)
+                                  })
+                                }
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              className="danger"
+                              onClick={() => removeCompositionElement(shot.id, activeElement.id)}
+                            >
+                              删除元素
+                            </button>
+                            <p className="hint">提示：在画布中拖动元素可调整位置。</p>
+                          </>
+                        ) : (
+                          <div className="empty">请选择一个元素进行编辑。</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
