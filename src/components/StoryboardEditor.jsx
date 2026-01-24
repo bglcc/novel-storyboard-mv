@@ -1108,3 +1108,35 @@ const StoryboardEditor = ({ novelId, chapter }) => {
 };
 
 export default StoryboardEditor;
+
+// Popup layout style for preview image and right element panel
+const popupStyle = {
+  display: 'flex',
+  flexDirection: 'row',
+  width: '80vw',
+  height: '80vh',
+  overflow: 'hidden',
+};
+
+const previewContainerStyle = {
+  position: 'relative',
+  width: '60%',  // Left side for preview image
+  height: '100%',
+  aspectRatio: '16 / 9',  // Maintain 16:9 aspect ratio
+  background: '#f8fbff',
+  overflow: 'hidden',
+  padding: 0,
+  display: 'flex',
+  justifyContent: 'center',
+  alignItems: 'center',
+};
+
+const elementPanelStyle = {
+  width: '40%',  // Right side for the scrollable element panel
+  overflowY: 'auto',
+  padding: '20px',
+  background: '#fff',
+  borderLeft: '1px solid #e5e7eb',
+  maxHeight: '100%',
+  position: 'relative',
+};
