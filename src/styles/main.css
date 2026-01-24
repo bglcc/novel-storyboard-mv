@@ -427,6 +427,15 @@ textarea.large-input {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
 }
 
+.modal-content.preview-editor {
+  width: min(1280px, 96vw);
+  max-width: 96vw;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .modal-content h3,
 .modal-content h4 {
   margin-top: 0;
@@ -571,7 +580,6 @@ textarea.large-input {
   height: 100%;
   object-fit: cover;
 }
-
 .ghost {
   border: none;
   background: transparent;

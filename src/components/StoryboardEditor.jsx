@@ -57,7 +57,10 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const [previewEditorShotId, setPreviewEditorShotId] = useState(null);
   const [activeElementId, setActiveElementId] = useState(null);
   const [dragging, setDragging] = useState(null);
+  const [interactionMode, setInteractionMode] = useState('move');
   const previewCanvasRef = useRef(null);
+  const historyRef = useRef([]);
+  const undoingRef = useRef(false);
 
   const scenes = data.resources.scenes || [];
   const characters = (data.resources.characters || []).filter(
@@ -126,9 +129,27 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       const y = ((event.clientY - rect.top) / rect.height) * 100;
       setDragging((prev) => {
         if (!prev) return null;
-        const clampedX = Math.max(0, Math.min(100, x));
-        const clampedY = Math.max(0, Math.min(100, y));
-        updateComposition(prev.shotId, prev.elementId, { x: clampedX, y: clampedY });
+        if (prev.mode === 'move') {
+          const clampedX = Math.max(0, Math.min(100, x));
+          const clampedY = Math.max(0, Math.min(100, y));
+          updateComposition(prev.shotId, prev.elementId, { x: clampedX, y: clampedY });
+          return prev;
+        }
+        const deltaPxX = event.clientX - prev.center.x;
+        const deltaPxY = event.clientY - prev.center.y;
+        if (prev.mode === 'rotate') {
+          const angle = Math.atan2(deltaPxY, deltaPxX);
+          const nextRotate = prev.start.rotate + (angle - prev.start.angle) * (180 / Math.PI);
+          updateComposition(prev.shotId, prev.elementId, { rotate: Math.round(nextRotate) });
+          return prev;
+        }
+        if (prev.mode === 'scale') {
+          const distance = Math.sqrt(deltaPxX ** 2 + deltaPxY ** 2);
+          const ratio = prev.start.distance ? distance / prev.start.distance : 1;
+          const nextScale = Math.max(0.2, Math.min(3, prev.start.scale * ratio));
+          updateComposition(prev.shotId, prev.elementId, { scale: Number(nextScale.toFixed(2)) });
+          return prev;
+        }
         return prev;
       });
     };
@@ -140,6 +161,22 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       window.removeEventListener('mouseup', handleUp);
     };
   }, [dragging]);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.ctrlKey && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        const history = historyRef.current;
+        if (!history.length) return;
+        const previous = history.pop();
+        undoingRef.current = true;
+        updateShots(previous);
+        undoingRef.current = false;
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const getActiveTab = (shotId) => activeTabs[shotId] || 'frame';
   const getSideTab = (shotId) => sideTabsState[shotId] || 'info';
@@ -179,6 +216,9 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   };
 
   const updateShots = (next) => {
+    if (!undoingRef.current) {
+      historyRef.current = [...historyRef.current, chapter.storyboards || []].slice(-30);
+    }
     updateChapter(novelId, chapter.id, { storyboards: next, storyboardUpdatedAt: Date.now() });
     const missing = detectMissingResources(next);
     if (missing.length) {
@@ -357,6 +397,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       const nextFrames = [...(shot.keyframes || [])];
       const newFrame = { id: crypto.randomUUID(), label: `关键帧${nextFrames.length + 1}` };
       nextFrames.push(newFrame);
+      return { ...shot, keyframes: nextFrames };
       return { ...shot, keyframes: nextFrames };
     });
     updateShots(updated);
@@ -556,7 +597,30 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                   ? (event) => {
                       event.stopPropagation();
                       setActiveElementId(element.id);
-                      setDragging({ shotId: shot.id, elementId: element.id });
+                      const rect = previewCanvasRef.current?.getBoundingClientRect();
+                      if (!rect) return;
+                      const center = {
+                        x: rect.left + (rect.width * (element.x ?? 50)) / 100,
+                        y: rect.top + (rect.height * (element.y ?? 50)) / 100
+                      };
+                      const startDeltaX = event.clientX - center.x;
+                      const startDeltaY = event.clientY - center.y;
+                      const startDistance = Math.sqrt(startDeltaX ** 2 + startDeltaY ** 2);
+                      const startAngle = Math.atan2(startDeltaY, startDeltaX);
+                      setDragging({
+                        shotId: shot.id,
+                        elementId: element.id,
+                        mode: interactionMode,
+                        center,
+                        start: {
+                          x: element.x ?? 50,
+                          y: element.y ?? 50,
+                          rotate: element.rotate ?? 0,
+                          scale: element.scale ?? 1,
+                          distance: startDistance,
+                          angle: startAngle
+                        }
+                      });
                     }
                   : undefined
               }
@@ -783,7 +847,6 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                     </div>
                   </div>
                 )}
-
                 {activeTab === 'animation' && (
                   <div className="shot-panel">
                     <div className="row compact">
@@ -981,11 +1044,42 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                     </div>
                   </div>
                   <div className="preview-editor-body">
-                    <div className="preview-editor-canvas" onClick={() => setActiveElementId(null)}>
-                      {renderCompositionPreview(shot, true)}
-                      {!composition.length && <div className="empty">暂无拼图元素，请从右侧资源添加。</div>}
+                    <div className="preview-editor-stage" onClick={() => setActiveElementId(null)}>
+                      <div className="preview-editor-frame">
+                        <div className={`preview-editor-canvas mode-${interactionMode}`}>
+                          {renderCompositionPreview(shot, true)}
+                          {!composition.length && <div className="empty">暂无拼图元素，请从右侧资源添加。</div>}
+                        </div>
+                      </div>
                     </div>
                     <div className="preview-editor-panel">
+                      <div className="panel-section">
+                        <h5>工具</h5>
+                        <div className="tool-row">
+                          <button
+                            type="button"
+                            className={interactionMode === 'move' ? 'tool-button active' : 'tool-button'}
+                            onClick={() => setInteractionMode('move')}
+                          >
+                            移动
+                          </button>
+                          <button
+                            type="button"
+                            className={interactionMode === 'rotate' ? 'tool-button active' : 'tool-button'}
+                            onClick={() => setInteractionMode('rotate')}
+                          >
+                            旋转
+                          </button>
+                          <button
+                            type="button"
+                            className={interactionMode === 'scale' ? 'tool-button active' : 'tool-button'}
+                            onClick={() => setInteractionMode('scale')}
+                          >
+                            缩放
+                          </button>
+                        </div>
+                        <p className="hint">提示：选中元素后，按住鼠标拖动即可按当前工具进行操作。</p>
+                      </div>
                       <div className="panel-section">
                         <h5>资源添加</h5>
                         {resourceSections.map((section) => (
@@ -1108,35 +1202,3 @@ const StoryboardEditor = ({ novelId, chapter }) => {
 };
 
 export default StoryboardEditor;
-
-// Popup layout style for preview image and right element panel
-const popupStyle = {
-  display: 'flex',
-  flexDirection: 'row',
-  width: '80vw',
-  height: '80vh',
-  overflow: 'hidden',
-};
-
-const previewContainerStyle = {
-  position: 'relative',
-  width: '60%',  // Left side for preview image
-  height: '100%',
-  aspectRatio: '16 / 9',  // Maintain 16:9 aspect ratio
-  background: '#f8fbff',
-  overflow: 'hidden',
-  padding: 0,
-  display: 'flex',
-  justifyContent: 'center',
-  alignItems: 'center',
-};
-
-const elementPanelStyle = {
-  width: '40%',  // Right side for the scrollable element panel
-  overflowY: 'auto',
-  padding: '20px',
-  background: '#fff',
-  borderLeft: '1px solid #e5e7eb',
-  maxHeight: '100%',
-  position: 'relative',
-};
