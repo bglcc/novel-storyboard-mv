@@ -41,13 +41,23 @@ export const DataProvider = ({ children }) => {
             outlineVersions: novel.outlineVersions || [],
             outlineSelectionHistory: novel.outlineSelectionHistory || [],
             relationshipGraph: novel.relationshipGraph || { nodes: [], relations: [] },
+            worldviewText: novel.worldviewText || '',
+            foreshadows: novel.foreshadows || [],
+            detailOutlineChapters: novel.detailOutlineChapters || [],
+            detailOutlineUpdatedAt: novel.detailOutlineUpdatedAt || null,
             chapters: (novel.chapters || []).map((chapter) => ({
               id: chapter.id,
               title: chapter.title,
-              status: chapter.status || '仅录入',
+              status: chapter.status || '未录入',
               content: chapter.content || '',
               storyboards: chapter.storyboards || [],
-              storyboardUpdatedAt: chapter.storyboardUpdatedAt || null
+              storyboardUpdatedAt: chapter.storyboardUpdatedAt || null,
+              summaryText: chapter.summaryText || '',
+              summaryTasks: chapter.summaryTasks || [],
+              summaryTasksComplete: chapter.summaryTasksComplete || false,
+              summaryUpdatedAt: chapter.summaryUpdatedAt || null,
+              finalPackageDownloadedAt: chapter.finalPackageDownloadedAt || null,
+              detailOutlineId: chapter.detailOutlineId || ''
             }))
           }))
         };
@@ -143,7 +153,11 @@ export const DataProvider = ({ children }) => {
       outlineStatus: '未生成',
       outlineVersions: [],
       outlineSelectionHistory: [],
-      relationshipGraph: { nodes: [], relations: [] }
+      relationshipGraph: { nodes: [], relations: [] },
+      worldviewText: '',
+      foreshadows: [],
+      detailOutlineChapters: [],
+      detailOutlineUpdatedAt: null
     };
     setData((prev) => ({ ...prev, novels: [...prev.novels, newNovel] }));
     return newNovel.id;
@@ -164,10 +178,16 @@ export const DataProvider = ({ children }) => {
     const newChapter = {
       id: uuidv4(),
       title,
-      status: '仅录入',
+      status: '未录入',
       content: content || '',
       storyboards: [],
-      storyboardUpdatedAt: null
+      storyboardUpdatedAt: null,
+      summaryText: '',
+      summaryTasks: [],
+      summaryTasksComplete: false,
+      summaryUpdatedAt: null,
+      finalPackageDownloadedAt: null,
+      detailOutlineId: ''
     };
     setData((prev) => ({
       ...prev,

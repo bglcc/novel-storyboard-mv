@@ -5,8 +5,9 @@ import { useData } from '../context/DataContext';
 import '../styles/novel.css';
 
 const statusColors = {
-  仅录入: 'gray',
-  待审核: 'orange',
+  未录入: 'gray',
+  已录入: 'blue',
+  待完成: 'orange',
   已完成: 'green'
 };
 
@@ -28,10 +29,11 @@ const ChapterPage = () => {
   if (!chapter || !novel) return <div className="card">未找到章节。</div>;
 
   const computedStatus = useMemo(() => {
-    if (!chapter) return '仅录入';
-    if ((chapter.storyboards || []).length > 0) return '待审核';
-    if ((chapter.content || '').trim()) return '仅录入';
-    return '仅录入';
+    if (!chapter) return '未录入';
+    if (chapter.finalPackageDownloadedAt) return '已完成';
+    if ((chapter.storyboards || []).length > 0) return '待完成';
+    if ((chapter.content || '').trim()) return '已录入';
+    return '未录入';
   }, [chapter]);
 
   useEffect(() => {
@@ -50,15 +52,22 @@ const ChapterPage = () => {
           <div className={`status-pill ${statusColors[computedStatus] || 'gray'}`}>章节状态：{computedStatus}</div>
           <div className="row">
             <button type="button" onClick={() => setShowOriginal((v) => !v)}>
-              {showOriginal ? '收起原文' : '展开原文'}
+              {showOriginal ? '收起' : '展开'}
             </button>
             <button type="button" className="tab" onClick={() => setEditModalOpen(true)}>
-              编辑原文
+              编辑
             </button>
           </div>
         </div>
         {showOriginal && (
           <div className="original-box">
+            {chapter.summaryText && (
+              <div className="summary-block">
+                <div className="label">结果摘要</div>
+                <pre className="original-text">{chapter.summaryText}</pre>
+              </div>
+            )}
+            <div className="label">章节原文</div>
             <pre className="original-text">{content || '尚未填写原文'}</pre>
           </div>
         )}

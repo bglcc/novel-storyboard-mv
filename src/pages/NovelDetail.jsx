@@ -2,389 +2,357 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 import '../styles/novel-outline.css';
+import '../styles/novel.css';
 
 const statusColors = {
-  仅录入: 'gray',
-  待审核: 'orange',
+  未录入: 'gray',
+  已录入: 'blue',
+  待完成: 'orange',
   已完成: 'green'
 };
 
-const outlineQuestions = [
-  {
-    id: 'theme',
-    title: '故事的核心主题是什么？',
-    options: ['成长', '复仇', '爱情', '战争', '冒险', '发现自我'],
-    otherLabel: '其他（请简述）',
-    pending: '待议：如果有特殊的主题要求，AI 可以提供建议，是否需要更深层的主题或多重主题的结合？'
-  },
-  {
-    id: 'setting',
-    title: '故事的背景设定属于哪种类型？',
-    options: ['现代', '架空历史', '科幻', '玄幻', '奇幻', '现实主义'],
-    otherLabel: '其他（请简述）',
-    pending: '待议：AI 可以提供背景设定的创意建议，是否需要融合多个元素？'
-  },
-  {
-    id: 'conflict',
-    title: '故事的主要冲突类型是什么？',
-    options: ['人与人之间的冲突', '人与社会的冲突', '人与自然的冲突', '人与内心的冲突', '人与技术的冲突'],
-    otherLabel: '其他（请简述）',
-    pending: '待议：是否考虑内心的深层冲突和外部冲突的双重拉扯？'
-  },
-  {
-    id: 'protagonist',
-    title: '主角的性格特征是什么？',
-    options: ['英勇 / 勇敢', '智慧 / 理性', '忍耐 / 坚韧', '幽默 / 机智', '叛逆 / 由', '矛盾 / 内心冲突'],
-    otherLabel: '其他（请简述）',
-    pending: '待议：是否考虑加入角色的缺点或者成长曲线？'
-  },
-  {
-    id: 'antagonist',
-    title: '主要反派或对立力量是什么？',
-    options: ['个人反派（如邪恶领主）', '社会结构（如不公正的制度）', '自然灾害或外星生物', '内心的恐惧或缺陷'],
-    otherLabel: '其他（请简述）',
-    pending: '待议：反派是否仅限于一个角色，还是由多重力量组成？'
-  },
-  {
-    id: 'tone',
-    title: '故事的情感基调是什么？',
-    options: ['喜剧', '悲剧', '悬疑 / 惊悚', '戏剧性 / 转折', '温情 / 治愈', '紧张 / 压迫感'],
-    otherLabel: '其他（请简述）',
-    pending: '待议：是否考虑情感基调的转换？比如故事从紧张转为温情等？'
-  },
-  {
-    id: 'pov',
-    title: '故事的叙述视角是什么？',
-    options: ['第一人称', '第三人称', '全知视角', '非线性叙事'],
-    otherLabel: '其他（请简述）',
-    pending: '待议：是否需要多重视角叙事来增强故事层次感？'
-  },
-  {
-    id: 'timeline',
-    title: '故事的时间线如何设置？',
-    options: ['线性时间，按事件发生顺序推进', '倒叙或回忆', '时间碎片化（跳跃式展开）'],
-    otherLabel: '其他（请简述）',
-    pending: '待议：时间线的跳跃是否影响故事的连贯性？是否需要 AI 提供多种时间线排列的建议？'
-  },
-  {
-    id: 'goal',
-    title: '主角的目标是什么？',
-    options: ['追求爱情', '实现个人复仇', '战胜恶势力', '保护家园', '寻找失落的宝藏', '探索未知领域'],
-    otherLabel: '其他（请简述）',
-    pending: '待议：是否考虑主角目标的多重性或变动性？'
-  },
-  {
-    id: 'ending',
-    title: '故事的结局会是怎样的？',
-    options: ['快乐结局（主角成功或满足）', '悲伤结局（主角牺牲或失败）', '开放结局（没有明确的答案）', '中性结局（没有明确的胜负，更多的是过程）'],
-    otherLabel: '其他（请简述）',
-    pending: '待议：结局是否需要对故事中的矛盾点做进一步的回应或解答？'
-  }
-];
-
-const outlinePlaceholderMap = {
-  theme: '选择的主题',
-  setting: '选择的背景设定',
-  conflict: '选择的冲突类型',
-  protagonist: '选择的性格特征',
-  antagonist: '选择的反派或对立力量',
-  tone: '选择的情感基调',
-  pov: '选择的叙述视角',
-  timeline: '选择的时间线设置',
-  goal: '选择的目标',
-  ending: '选择的结局'
+const chapterStatusPriority = {
+  待完成: 1,
+  已录入: 2,
+  未录入: 3,
+  已完成: 4
 };
 
-const buildInitialSelections = () =>
-  outlineQuestions.reduce(
-    (acc, question) => ({
-      ...acc,
-      [question.id]: {
-        selected: [],
-        other: '',
-        pending: false
-      }
-    }),
-    {}
-  );
+const detailOutlineTemplate = {
+  chapters: [
+    {
+      title: '第一章',
+      detail: '章节细纲内容',
+      tasks: [
+        {
+          id: 'task-001',
+          type: '埋设',
+          foreshadowNumber: 'FP-001',
+          foreshadowTitle: '伏笔标题',
+          status: '待完成'
+        }
+      ]
+    }
+  ],
+  foreshadows: [
+    {
+      number: 1,
+      description: '伏笔描述',
+      type: '大型伏笔',
+      status: '未埋设',
+      buryRule: '埋设规则',
+      recoverRule: '回收规则'
+    }
+  ]
+};
 
-const defaultOutlinePromptTemplate =
-  '你是一个专业的故事创作者，本故事的核心主题是：[选择的主题]，故事发生在：[选择的背景设定]。故事的主要冲突是：[选择的冲突类型]，而主角性格为：[选择的性格特征]。故事中的主要反派是：[选择的反派或对立力量]，故事情感基调为：[选择的情感基调]。本故事使用[选择的叙述视角]视角进行叙述，时间线采用[选择的时间线设置]。主角的目标是：[选择的目标]，故事将以[选择的结局]结尾。';
+const summaryTemplate = {
+  summaryText: '本章结果摘要文本',
+  tasks: [
+    {
+      id: 'task-001',
+      status: '已完成'
+    }
+  ]
+};
+
+const foreshadowTypes = ['大型伏笔', '中型伏笔', '小型伏笔'];
+const foreshadowStatuses = ['已回收', '正在推进', '已埋设', '未埋设'];
 
 const NovelDetail = () => {
   const { novelId } = useParams();
   const navigate = useNavigate();
-  const { data, addChapter, updateChapter, updateNovel, upsertResource, upsertRule } = useData();
+  const { data, updateChapter, updateNovel, upsertRule } = useData();
   const novel = data.novels.find((n) => n.id === novelId);
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editModal, setEditModal] = useState(null);
-  const [outlineModalOpen, setOutlineModalOpen] = useState(false);
-  const [promptModalOpen, setPromptModalOpen] = useState(false);
-  const [outlineViewOpen, setOutlineViewOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState('outline');
   const [outlineEditMode, setOutlineEditMode] = useState(false);
-  const [outlineViewTab, setOutlineViewTab] = useState('outline');
-  const [relationshipModalOpen, setRelationshipModalOpen] = useState(false);
-  const [uploadingNovel, setUploadingNovel] = useState(false);
-  const [outlineSelections, setOutlineSelections] = useState(buildInitialSelections);
-  const [outlineSummary, setOutlineSummary] = useState([]);
-  const [outlinePromptDraft, setOutlinePromptDraft] = useState(novel?.outlinePrompt || '');
   const [outlineDraft, setOutlineDraft] = useState(novel?.outlineText || '');
-  const outlineRule = useMemo(
-    () => (data.rules || []).find((rule) => rule.tool === '生成小说-大纲提示词'),
-    [data.rules]
-  );
-  const promptTemplate = outlineRule?.promptTemplate || defaultOutlinePromptTemplate;
+  const [worldviewEditMode, setWorldviewEditMode] = useState(false);
+  const [worldviewDraft, setWorldviewDraft] = useState(novel?.worldviewText || '');
+  const [detailExpanded, setDetailExpanded] = useState({});
+  const [detailEdit, setDetailEdit] = useState(null);
+  const [foreshadowExpanded, setForeshadowExpanded] = useState({});
+  const [uploadingChapterId, setUploadingChapterId] = useState('');
+  const [summaryUploadingChapterId, setSummaryUploadingChapterId] = useState('');
 
   useEffect(() => {
     if (!novel) return;
-    setOutlinePromptDraft(novel.outlinePrompt || '');
     setOutlineDraft(novel.outlineText || '');
+    setWorldviewDraft(novel.worldviewText || '');
   }, [novel]);
 
   useEffect(() => {
-    const existing = (data.rules || []).some((rule) => rule.tool === '生成小说-大纲提示词');
-    if (existing) return;
-    upsertRule({
-      tool: '生成小说-大纲提示词',
-      description: '生成小说大纲提示词模板与选项规范。',
-      promptTemplate: defaultOutlinePromptTemplate,
-      parameters: {
-        overview: '用于生成小说大纲提示词的模板与选项集。',
-        questions: outlineQuestions.map((question) => ({
-          id: question.id,
-          title: question.title,
-          options: question.options,
-          otherLabel: question.otherLabel,
-          pending: question.pending
-        }))
-      }
-    });
-  }, [data.rules, upsertRule]);
+    if (!novel) return;
+    const nextTab = (novel.detailOutlineChapters || []).length > 0 ? 'chapters' : 'outline';
+    setActiveTab(nextTab);
+  }, [novelId]);
 
   useEffect(() => {
-    const existing = (data.rules || []).some((rule) => rule.tool === '生成小说-正文规则');
-    if (existing) return;
-    upsertRule({
-      tool: '生成小说-正文规则',
-      description: '生成小说阶段的规则包说明与导入规范。',
-      parameters: {
-        overview: '用于生成小说正文的规则说明与输入规范。',
-        tasks: ['生成小说正文', '补充必要的资源库基础信息', '维护总角色关系网（如有变更）'],
-        importSpec: {
-          outline: '小说大纲（文本）',
-          existingText: '已有小说原文（章节列表）',
-          resources: {
-            characters: '角色资源描述与成长史（无图）',
-            scenes: '场景资源文字与参考图（如有）'
+    const defaultRules = [
+      {
+        tool: '细纲规则库',
+        description: '细纲生成与任务清单的规则说明。',
+        parameters: {
+          overview: '用于生成章节细纲、伏笔埋设与回收任务清单的规则说明。',
+          tasks: ['生成章节细纲', '输出伏笔埋设/回收任务清单', '维护章节任务进度'],
+          exportSpec: {
+            chapters: '章节细纲与任务清单',
+            foreshadows: '伏笔条目（编号/类型/状态/规则）'
           },
-          relationshipGraph: '总角色关系网',
-          rules: '生成小说对应规则库内容'
+          importSpec: {
+            outline: '小说大纲（文本）',
+            foreshadows: '伏笔资源库',
+            chapters: '细纲章节列表'
+          }
         }
+      },
+      {
+        tool: '伏笔规则库',
+        description: '伏笔管理与回收规则的规范说明。',
+        parameters: {
+          overview: '用于维护伏笔类型、状态、埋设/回收规则的规则说明。',
+          tasks: ['新增伏笔条目', '维护伏笔埋设与回收规则', '追踪伏笔状态'],
+          exportSpec: {
+            foreshadows: '伏笔列表（编号/类型/状态/规则）'
+          },
+          importSpec: {
+            foreshadows: '伏笔列表（编号/描述/类型/状态/规则）'
+          }
+        }
+      },
+      {
+        tool: '摘要规则库',
+        description: '结果摘要的输出与校验规范。',
+        parameters: {
+          overview: '用于生成章节结果摘要并校验细纲任务完成情况。',
+          tasks: ['输出章节结果摘要', '回传任务完成状态', '校验伏笔埋设/回收进度'],
+          exportSpec: {
+            summaryText: '章节结果摘要文本',
+            tasks: '任务完成状态（与细纲任务对应）'
+          },
+          importSpec: {
+            detailOutline: '细纲任务清单',
+            summary: '章节结果摘要内容'
+          }
+        }
+      }
+    ];
+    defaultRules.forEach((rule) => {
+      const exists = (data.rules || []).some((entry) => entry.tool === rule.tool);
+      if (!exists) {
+        upsertRule(rule);
       }
     });
   }, [data.rules, upsertRule]);
 
   if (!novel) return <div className="card">未找到小说。</div>;
 
-  const handleAddChapter = (e) => {
-    if (e) e.preventDefault();
-    if (!title.trim() || !content.trim()) return;
-    const newId = addChapter(novelId, title.trim(), content.trim());
-    setTitle('');
-    setContent('');
-    setModalOpen(false);
-    if (newId) navigate(`/novel/${novelId}/chapter/${newId}`);
+  const computeChapterStatus = (chapter) => {
+    if (!chapter) return '未录入';
+    if (chapter.finalPackageDownloadedAt) return '已完成';
+    if ((chapter.storyboards || []).length > 0) return '待完成';
+    if ((chapter.content || '').trim()) return '已录入';
+    return '未录入';
   };
 
-  const outlineStatus = novel.outlineText
-    ? '已上传'
-    : novel.outlinePrompt
-      ? '已生成'
-      : '未生成';
+  const detailOutlineChapters = novel.detailOutlineChapters || [];
 
-  const handleToggleOption = (questionId, option) => {
-    setOutlineSelections((prev) => {
-      const current = prev[questionId];
-      const selected = current.selected.includes(option)
-        ? current.selected.filter((item) => item !== option)
-        : [...current.selected, option];
-      return { ...prev, [questionId]: { ...current, selected } };
+  const sortedChapters = useMemo(() => {
+    const chapters = novel.chapters || [];
+    const map = new Map();
+    detailOutlineChapters.forEach((detail, index) => {
+      map.set(detail.id, index);
     });
-  };
+    return chapters
+      .map((chapter) => ({
+        ...chapter,
+        computedStatus: computeChapterStatus(chapter),
+        outlineIndex: map.has(chapter.detailOutlineId) ? map.get(chapter.detailOutlineId) : 9999
+      }))
+      .sort((a, b) => {
+        const aPriority = chapterStatusPriority[a.computedStatus] || 99;
+        const bPriority = chapterStatusPriority[b.computedStatus] || 99;
+        if (aPriority !== bPriority) return aPriority - bPriority;
+        if (aPriority === chapterStatusPriority['已完成']) {
+          return (b.finalPackageDownloadedAt || 0) - (a.finalPackageDownloadedAt || 0);
+        }
+        if (a.outlineIndex !== b.outlineIndex) return a.outlineIndex - b.outlineIndex;
+        return (b.storyboardUpdatedAt || 0) - (a.storyboardUpdatedAt || 0);
+      });
+  }, [detailOutlineChapters, novel.chapters]);
 
-  const handleOtherChange = (questionId, value) => {
-    setOutlineSelections((prev) => ({
-      ...prev,
-      [questionId]: { ...prev[questionId], other: value }
-    }));
-  };
-
-  const handlePendingToggle = (questionId) => {
-    setOutlineSelections((prev) => ({
-      ...prev,
-      [questionId]: { ...prev[questionId], pending: !prev[questionId].pending }
-    }));
-  };
-
-  const buildAnswerText = (question) => {
-    const selection = outlineSelections[question.id];
-    const values = [...selection.selected];
-    if (selection.other.trim()) values.push(selection.other.trim());
-    if (selection.pending) values.push(question.pending);
-    return values.length ? values.join('、') : '未指定';
-  };
-
-  const handleGeneratePrompt = () => {
-    const summary = outlineQuestions.map((question) => ({
-      id: question.id,
-      title: question.title,
-      answer: buildAnswerText(question)
-    }));
-    setOutlineSummary(summary);
-    const replacements = summary.reduce((acc, item) => {
-      const placeholderKey = outlinePlaceholderMap[item.id];
-      if (!placeholderKey) return acc;
-      return { ...acc, [placeholderKey]: item.answer };
-    }, {});
-    let nextPrompt = promptTemplate;
-    Object.entries(replacements).forEach(([key, value]) => {
-      nextPrompt = nextPrompt.replaceAll(`[${key}]`, value);
-    });
-    setOutlinePromptDraft(nextPrompt);
-    setOutlineModalOpen(false);
-    setPromptModalOpen(true);
-  };
-
-  const handleSavePrompt = () => {
-    const now = new Date().toISOString();
-    const historyEntry = {
-      id: crypto.randomUUID(),
-      createdAt: now,
-      selections: outlineSelections,
-      summary: outlineSummary,
-      prompt: outlinePromptDraft.trim()
-    };
-    const nextHistory = [...(novel.outlineSelectionHistory || []), historyEntry];
-    updateNovel(novelId, {
-      outlinePrompt: outlinePromptDraft.trim(),
-      outlineGeneratedAt: now,
-      outlineStatus: outlinePromptDraft.trim() ? '已生成' : '未生成',
-      outlineSelectionHistory: nextHistory
-    });
-    setPromptModalOpen(false);
-  };
-
-  const handleSaveOutline = () => {
-    const now = new Date().toISOString();
-    const nextVersions = [
-      ...(novel.outlineVersions || []),
-      {
-        version: (novel.outlineVersions || []).length + 1,
-        outlineText: outlineDraft.trim(),
-        updatedAt: now
-      }
-    ];
-    updateNovel(novelId, {
-      outlineText: outlineDraft.trim(),
-      outlineUpdatedAt: now,
-      outlineStatus: outlineDraft.trim() ? '已上传' : outlineStatus,
-      outlineVersions: nextVersions
-    });
-    setOutlineEditMode(false);
-    setOutlineViewOpen(false);
-  };
-
-  const handleCopyPrompt = async () => {
-    if (!outlinePromptDraft.trim()) return;
-    try {
-      await navigator.clipboard.writeText(outlinePromptDraft.trim());
-      alert('提示词已复制');
-    } catch (e) {
-      alert('复制失败，请手动复制');
+  const findDetailChapter = (chapter) => {
+    if (!chapter) return null;
+    if (chapter.detailOutlineId) {
+      return detailOutlineChapters.find((entry) => entry.id === chapter.detailOutlineId) || null;
     }
+    return detailOutlineChapters.find((entry) => entry.title === chapter.title) || null;
   };
 
-  const handleRelationshipImport = async (event) => {
+  const handleOutlineUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
       const text = await file.text();
       const cleaned = text.replace(/^\uFEFF/, '').trim();
       if (!cleaned) {
-        alert('关系网 JSON 为空');
+        alert('大纲内容为空');
         return;
       }
-      let parsed = JSON.parse(cleaned);
-      if (typeof parsed === 'string') {
-        parsed = JSON.parse(parsed);
+      let parsed = cleaned;
+      if (cleaned.startsWith('{') || cleaned.startsWith('[')) {
+        const json = JSON.parse(cleaned);
+        parsed = json.outlineText || json.outline || json.text || cleaned;
       }
-      updateNovel(novelId, { relationshipGraph: parsed });
-    } catch (e) {
-      alert('关系网 JSON 解析失败');
+      updateNovel(novelId, {
+        outlineText: parsed,
+        outlineUpdatedAt: new Date().toISOString(),
+        outlineStatus: '已上传'
+      });
+      setOutlineDraft(parsed);
+    } catch (error) {
+      alert('大纲解析失败');
+    } finally {
+      event.target.value = '';
     }
   };
 
-  const handleRelationshipExport = () => {
-    const blob = new Blob([JSON.stringify(novel.relationshipGraph || { nodes: [], relations: [] }, null, 2)], {
-      type: 'application/json'
+  const handleSaveOutline = () => {
+    const now = new Date().toISOString();
+    updateNovel(novelId, {
+      outlineText: outlineDraft.trim(),
+      outlineUpdatedAt: now,
+      outlineStatus: outlineDraft.trim() ? '已上传' : '未生成'
     });
+    setOutlineEditMode(false);
+  };
+
+  const handleSaveWorldview = () => {
+    updateNovel(novelId, { worldviewText: worldviewDraft.trim() });
+    setWorldviewEditMode(false);
+  };
+
+  const normalizeDetailOutlineChapters = (payload) => {
+    if (!Array.isArray(payload)) return [];
+    return payload.map((item, index) => ({
+      id: item.id || crypto.randomUUID(),
+      title: item.title || `章节 ${index + 1}`,
+      detail: item.detail || item.content || '',
+      tasks: Array.isArray(item.tasks)
+        ? item.tasks.map((task, taskIndex) => ({
+            id: task.id || `task-${index + 1}-${taskIndex + 1}`,
+            type: task.type || task.action || '埋设',
+            foreshadowNumber: task.foreshadowNumber || task.foreshadowNo || '',
+            foreshadowTitle: task.foreshadowTitle || task.foreshadow || '',
+            status: task.status || (task.completed ? '已完成' : '待完成')
+          }))
+        : []
+    }));
+  };
+
+  const handleGenerateDetailOutline = () => {
+    const payload = {
+      outlineText: novel.outlineText || '',
+      chapters: detailOutlineChapters.length ? detailOutlineChapters : detailOutlineTemplate.chapters,
+      foreshadows: (novel.foreshadows || []).length ? novel.foreshadows : detailOutlineTemplate.foreshadows
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${novel.title || 'novel'}-relationship.json`;
+    link.download = `${novel.title || 'novel'}-detail-outline.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
-  const handleDownloadNovelPackage = () => {
-    const characters = (data.resources.characters || []).filter(
-      (character) => !character.novelId || character.novelId === novelId
-    );
-    const characterPayload = characters.map((character) => ({
-      id: character.id,
-      name: character.name,
-      description: character.description,
-      tags: character.tags || [],
-      aliases: character.aliases || [],
-      priorityPin: character.priorityPin || false,
-      meta: {
-        personalitySetting: character.meta?.personalitySetting || '',
-        growthTrajectory: character.meta?.growthTrajectory || '',
-        characterGrowthHistory: character.meta?.characterGrowthHistory || [],
-        persona: character.meta?.persona || ''
+  const handleDetailOutlineUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const cleaned = text.replace(/^\uFEFF/, '').trim();
+      if (!cleaned) {
+        alert('细纲内容为空');
+        return;
+      }
+      let parsed = JSON.parse(cleaned);
+      if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+      const detailChapters = normalizeDetailOutlineChapters(
+        parsed.detailOutlineChapters || parsed.chapters || parsed.detailOutline || []
+      );
+      const foreshadows = Array.isArray(parsed.foreshadows) ? parsed.foreshadows : novel.foreshadows || [];
+      const existingChapters = novel.chapters || [];
+      const nextChapters = detailChapters.map((detail, index) => {
+        const match = existingChapters.find((chapter) => chapter.detailOutlineId === detail.id)
+          || existingChapters.find((chapter) => chapter.title === detail.title);
+        if (match) {
+          return { ...match, title: detail.title, detailOutlineId: detail.id };
+        }
+        return {
+          id: crypto.randomUUID(),
+          title: detail.title || `章节 ${index + 1}`,
+          status: '未录入',
+          content: '',
+          storyboards: [],
+          storyboardUpdatedAt: null,
+          summaryText: '',
+          summaryTasks: [],
+          summaryTasksComplete: false,
+          summaryUpdatedAt: null,
+          finalPackageDownloadedAt: null,
+          detailOutlineId: detail.id
+        };
+      });
+      updateNovel(novelId, {
+        detailOutlineChapters: detailChapters,
+        detailOutlineUpdatedAt: new Date().toISOString(),
+        foreshadows,
+        chapters: nextChapters
+      });
+      alert('细纲已更新');
+    } catch (error) {
+      alert('细纲解析失败');
+    } finally {
+      event.target.value = '';
+    }
+  };
+
+  const handleDownloadDetailOutlineFix = (chapter) => {
+    const detail = findDetailChapter(chapter);
+    const payload = {
+      chapter: detail || {
+        title: chapter.title,
+        detail: '',
+        tasks: []
       },
-      form: character.form || [],
-      action: character.action || []
-    }));
-    const scenePayload = (data.resources.scenes || []).map((scene) => ({
-      id: scene.id,
-      name: scene.name,
-      description: scene.description,
-      tags: scene.tags || [],
-      meta: scene.meta || {},
-      images: scene.images || []
-    }));
+      foreshadows: novel.foreshadows || [],
+      note: '细纲修正资源包'
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${chapter.title || 'chapter'}-detail-outline-fix.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleChapterNovelDownload = (chapter) => {
+    const detail = findDetailChapter(chapter);
     const payload = {
       novel: {
         id: novel.id,
         title: novel.title,
-        outlinePrompt: novel.outlinePrompt || '',
         outlineText: novel.outlineText || '',
-        outlineVersions: novel.outlineVersions || [],
-        outlineSelectionHistory: novel.outlineSelectionHistory || []
+        worldviewText: novel.worldviewText || ''
       },
-      chapters: (novel.chapters || []).map((chapter) => ({
+      chapter: {
         id: chapter.id,
         title: chapter.title,
-        content: chapter.content || '',
-        status: chapter.status || ''
-      })),
-      resources: {
-        characters: characterPayload,
-        scenes: scenePayload
+        detailOutline: detail || {},
+        content: chapter.content || ''
       },
+      foreshadows: novel.foreshadows || [],
       relationshipGraph: novel.relationshipGraph || { nodes: [], relations: [] },
       rules: (data.rules || []).filter((rule) => (rule.tool || '').includes('生成小说'))
     };
@@ -392,634 +360,678 @@ const NovelDetail = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${novel.title || 'novel'}-generation.json`;
+    link.download = `${chapter.title || 'chapter'}-novel.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
-  const handleUploadNovelPackage = async (event) => {
+  const handleChapterUpload = async (chapterId, event) => {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      setUploadingNovel(true);
+      setUploadingChapterId(chapterId);
       const text = await file.text();
       const cleaned = text.replace(/^\uFEFF/, '').trim();
       if (!cleaned) {
-        alert('小说包为空');
+        alert('小说内容为空');
         return;
       }
       let parsed = JSON.parse(cleaned);
-      if (typeof parsed === 'string') {
-        parsed = JSON.parse(parsed);
-      }
-      const payloadNovel = parsed.novel || parsed;
-      if (payloadNovel.outlineText || payloadNovel.outlinePrompt || payloadNovel.outlineSelectionHistory) {
-        updateNovel(novelId, {
-          outlineText: payloadNovel.outlineText || novel.outlineText || '',
-          outlinePrompt: payloadNovel.outlinePrompt || novel.outlinePrompt || '',
-          outlineSelectionHistory: payloadNovel.outlineSelectionHistory || novel.outlineSelectionHistory || []
-        });
-      }
-      if (parsed.relationshipGraph) {
-        updateNovel(novelId, { relationshipGraph: parsed.relationshipGraph });
-      }
-      if (Array.isArray(parsed.chapters)) {
-        const existing = novel.chapters || [];
-        const incoming = parsed.chapters.map((chapter) => ({
-          id: crypto.randomUUID(),
-          title: chapter.title || '新章节',
-          status: chapter.status || '仅录入',
-          content: chapter.content || '',
-          storyboards: chapter.storyboards || [],
-          storyboardUpdatedAt: chapter.storyboardUpdatedAt || null
-        }));
-        updateNovel(novelId, { chapters: [...existing, ...incoming] });
-      }
-      const resources = parsed.resources || {};
-      (resources.characters || []).forEach((character) => {
-        upsertResource('characters', {
-          ...character,
-          id: character.id || crypto.randomUUID(),
-          novelId
-        });
-      });
-      (resources.scenes || []).forEach((scene) => {
-        upsertResource('scenes', {
-          ...scene,
-          id: scene.id || crypto.randomUUID()
-        });
-      });
-      alert('小说包导入完成');
+      if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+      const nextContent = parsed.content || parsed.text || parsed.chapter?.content || parsed.chapter?.text || '';
+      const nextTitle = parsed.title || parsed.chapter?.title || '';
+      const updates = { content: nextContent || '' };
+      if (nextTitle) updates.title = nextTitle;
+      updateChapter(novelId, chapterId, updates);
+      alert('章节内容已更新');
     } catch (error) {
-      alert('小说包解析失败');
+      alert('小说内容解析失败');
     } finally {
-      setUploadingNovel(false);
+      setUploadingChapterId('');
       event.target.value = '';
     }
   };
 
+  const handleGenerateSummary = (chapter) => {
+    const detail = findDetailChapter(chapter);
+    const payload = {
+      chapterId: chapter.id,
+      chapterTitle: chapter.title,
+      summaryText: summaryTemplate.summaryText,
+      tasks: (detail?.tasks || []).length ? detail.tasks : summaryTemplate.tasks
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${chapter.title || 'chapter'}-summary.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleSummaryUpload = async (chapter, event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      setSummaryUploadingChapterId(chapter.id);
+      const text = await file.text();
+      const cleaned = text.replace(/^\uFEFF/, '').trim();
+      if (!cleaned) {
+        alert('摘要内容为空');
+        return;
+      }
+      let parsed = JSON.parse(cleaned);
+      if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+      const summaryText = parsed.summaryText || parsed.summary || parsed.text || '';
+      const incomingTasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
+      const detail = findDetailChapter(chapter);
+      const requiredTasks = detail?.tasks || [];
+      const mergedTasks = requiredTasks.map((task) => {
+        const match = incomingTasks.find(
+          (item) => item.id === task.id || item.foreshadowNumber === task.foreshadowNumber
+        );
+        const status = match?.status || (match?.completed ? '已完成' : task.status || '待完成');
+        return { ...task, status };
+      });
+      const tasksComplete = mergedTasks.length
+        ? mergedTasks.every((task) => task.status === '已完成')
+        : Boolean(parsed.tasksComplete || parsed.completed || false);
+      updateChapter(novelId, chapter.id, {
+        summaryText,
+        summaryTasks: mergedTasks,
+        summaryTasksComplete: tasksComplete,
+        summaryUpdatedAt: new Date().toISOString()
+      });
+      if (detail) {
+        const nextDetailChapters = detailOutlineChapters.map((item) =>
+          item.id === detail.id ? { ...item, tasks: mergedTasks } : item
+        );
+        updateNovel(novelId, { detailOutlineChapters: nextDetailChapters });
+      }
+      alert(tasksComplete ? '摘要已确认，任务完成' : '摘要已上传，仍有未完成任务');
+    } catch (error) {
+      alert('摘要解析失败');
+    } finally {
+      setSummaryUploadingChapterId('');
+      event.target.value = '';
+    }
+  };
+
+  const handleForeshadowUpdate = (id, updates) => {
+    const next = (novel.foreshadows || []).map((item) => (item.id === id ? { ...item, ...updates } : item));
+    updateNovel(novelId, { foreshadows: next });
+  };
+
+  const handleForeshadowAdd = () => {
+    const existing = novel.foreshadows || [];
+    const maxNumber = existing.reduce((acc, item) => Math.max(acc, item.number || 0), 0);
+    const next = {
+      id: crypto.randomUUID(),
+      number: maxNumber + 1,
+      description: '新的伏笔描述',
+      type: foreshadowTypes[0],
+      status: '未埋设',
+      buryRule: '',
+      recoverRule: ''
+    };
+    updateNovel(novelId, { foreshadows: [...existing, next] });
+  };
+
+  const handleForeshadowDelete = (id) => {
+    const next = (novel.foreshadows || []).filter((item) => item.id !== id);
+    updateNovel(novelId, { foreshadows: next });
+  };
+
+  const renderRelationshipGraph = () => {
+    const graph = novel.relationshipGraph || { nodes: [], relations: [] };
+    const relations = graph.relations || [];
+    const rawNodes = graph.nodes || [];
+    const relationNodes =
+      rawNodes.length > 0
+        ? rawNodes
+        : Array.from(
+            new Set(
+              relations.flatMap((rel) => [
+                rel.source,
+                rel.sourceId,
+                rel.from,
+                rel.fromId,
+                rel.sourceName,
+                rel.target,
+                rel.targetId,
+                rel.to,
+                rel.toId,
+                rel.targetName
+              ])
+            )
+          )
+            .filter(Boolean)
+            .map((name) => ({ id: name, name }));
+    if (relations.length === 0) {
+      return <div className="empty">暂无关系网数据，可导入 JSON 进行展示。</div>;
+    }
+    const characters = data.resources.characters || [];
+    const findImage = (node) => {
+      const match = characters.find((character) => character.id === node.id || character.name === node.name);
+      if (!match) return '';
+      const formViews = match.form?.[0]?.viewAssets || [];
+      const metaViews = match.meta?.viewAssets || [];
+      const front = formViews.find((asset) => asset.viewAngle === '正面');
+      return front?.src || formViews?.[0]?.src || metaViews?.[0]?.src || match.images?.[0] || '';
+    };
+    const positions = relationNodes.map((node, index) => {
+      const angle = (index / relationNodes.length) * Math.PI * 2;
+      return {
+        ...node,
+        key: node.id || node.name || `node-${index}`,
+        image: findImage(node),
+        position: {
+          x: 50 + 38 * Math.cos(angle),
+          y: 50 + 38 * Math.sin(angle)
+        }
+      };
+    });
+    const nodeMap = new Map(
+      positions.map((node) => [String(node.id || node.name), { x: node.position.x, y: node.position.y }])
+    );
+    return (
+      <div className="relation-board">
+        <div className="relation-network">
+          <svg className="relation-lines" viewBox="0 0 100 100" preserveAspectRatio="none">
+            {relations.map((rel, index) => {
+              const source = rel.source || rel.sourceId || rel.from || rel.fromId || rel.sourceName || '';
+              const target = rel.target || rel.targetId || rel.to || rel.toId || rel.targetName || '';
+              const sourcePos = nodeMap.get(String(source));
+              const targetPos = nodeMap.get(String(target));
+              if (!sourcePos || !targetPos) return null;
+              return (
+                <line
+                  key={`${source}-${target}-${index}`}
+                  x1={sourcePos.x}
+                  y1={sourcePos.y}
+                  x2={targetPos.x}
+                  y2={targetPos.y}
+                />
+              );
+            })}
+          </svg>
+          {positions.map((node) => (
+            <div
+              key={node.key}
+              className="relation-node rich"
+              style={{ left: `${node.position.x}%`, top: `${node.position.y}%` }}
+            >
+              <div className="relation-node-avatar">
+                {node.image ? <img src={node.image} alt={node.name} /> : <div className="placeholder" />}
+              </div>
+              <div className="relation-node-name">{node.name}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <div className="card">
+    <div className="card novel-detail">
       <div className="space-between">
         <div>
-          <h2>{novel.title} - 章节列表</h2>
-          <p className="muted">管理章节并进入分镜编辑</p>
+          <h2>{novel.title} - 章节管理</h2>
+          <p className="muted">使用 TAB 切换章节、世界观、大纲与伏笔管理。</p>
         </div>
         <div className="row">
           <Link to="/" className="tab">返回书架</Link>
-          {!novel.outlineText && (
-            <button
-              type="button"
-              onClick={() => {
-                setOutlineSelections(buildInitialSelections());
-                setOutlineSummary([]);
-                setOutlineModalOpen(true);
-              }}
-            >
-              生成大纲
-            </button>
-          )}
-          {outlineStatus === '已生成' && !novel.outlineText && (
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => {
-                setOutlinePromptDraft(novel.outlinePrompt || '');
-                setPromptModalOpen(true);
-              }}
-            >
-              复制关键词
-            </button>
-          )}
-          {!novel.outlineText && (
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => {
-                setOutlineDraft(novel.outlineText || '');
-                setOutlineViewOpen(true);
-                setOutlineEditMode(true);
-                setOutlineViewTab('outline');
-              }}
-            >
-              上传大纲
-            </button>
-          )}
-          {novel.outlineText && (
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => {
-                setOutlineDraft(novel.outlineText || '');
-                setOutlineViewOpen(true);
-                setOutlineEditMode(false);
-                setOutlineViewTab('outline');
-              }}
-            >
-              查看大纲
-            </button>
-          )}
-          <button type="button" className="ghost-button" onClick={() => setRelationshipModalOpen(true)}>
-            总关系网
-          </button>
-          <button type="button" className="ghost-button" onClick={handleDownloadNovelPackage}>
-            生成小说
-          </button>
-          <label className="file-button">
-            上传小说
-            <input type="file" accept="application/json" onChange={handleUploadNovelPackage} />
-          </label>
-          <button type="button" onClick={() => setModalOpen(true)}>+ 新建章节</button>
         </div>
       </div>
 
-      <div className="list">
-        {novel.chapters.map((chapter) => (
-          <div key={chapter.id} className="list-item chapter-item">
-            <div className="chapter-main">
-              <button className="ghost" onClick={() => setEditModal(chapter)}>
-                <div className="list-title chapter-title underline">{chapter.title}</div>
-              </button>
-            </div>
-            <div className="chapter-meta">
-              <div className={`status-pill ${statusColors[chapter.status] || 'gray'}`}>{chapter.status}</div>
-              <Link to={`/novel/${novelId}/chapter/${chapter.id}`} className="primary-button">
-                进入章节
-              </Link>
-            </div>
-          </div>
+      <div className="tabs tab-bar">
+        {[
+          { id: 'chapters', label: '小说章节' },
+          { id: 'worldview', label: '世界观' },
+          { id: 'outline', label: '大纲' },
+          { id: 'foreshadow', label: '伏笔管理' },
+          { id: 'relationship', label: '总关系网' }
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            className={activeTab === tab.id ? 'tab active' : 'tab'}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+          </button>
         ))}
-        {novel.chapters.length === 0 && <div className="empty">暂无章节，创建一个吧。</div>}
       </div>
 
-      {modalOpen && (
-        <div className="modal">
-          <div className="modal-content">
-            <h3>新建章节</h3>
-            <form className="stack" onSubmit={handleAddChapter}>
-              <label>
-                章节标题（必填）
-                <input
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="请输入章节标题"
-                  required
-                />
-              </label>
-              <label>
-                章节内容（必填）
-                <textarea
-                  className="large-input"
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  placeholder="请输入章节正文"
-                  required
-                />
-              </label>
-              <div className="row">
-                <button type="submit" className="primary">创建并进入章节</button>
-                <button type="button" className="tab" onClick={() => setModalOpen(false)}>
-                  取消
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {editModal && (
-        <div className="modal">
-          <div className="modal-content">
-            <h3>编辑章节</h3>
-            <form
-              className="stack"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!editModal.title.trim() || !editModal.content.trim()) return;
-                updateChapter(novelId, editModal.id, {
-                  title: editModal.title.trim(),
-                  content: editModal.content.trim()
-                });
-                setEditModal(null);
-              }}
-            >
-              <label>
-                章节标题
-                <input
-                  value={editModal.title}
-                  onChange={(e) => setEditModal((prev) => ({ ...prev, title: e.target.value }))}
-                  required
-                />
-              </label>
-              <label>
-                章节正文
-                <textarea
-                  className="large-input"
-                  value={editModal.content}
-                  onChange={(e) => setEditModal((prev) => ({ ...prev, content: e.target.value }))}
-                  required
-                />
-              </label>
-              <div className="row">
-                <button type="submit" className="primary">保存修改</button>
-                <button type="button" className="tab" onClick={() => setEditModal(null)}>
-                  取消
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {outlineModalOpen && (
-        <div className="modal">
-          <div className="modal-content large">
-            <h3>生成大纲 - 选择题</h3>
-            <div className="outline-question-list">
-              {outlineQuestions.map((question) => {
-                const selection = outlineSelections[question.id];
-                return (
-                  <div key={question.id} className="outline-question-card">
-                    <div className="label">{question.title}</div>
-                    <div className="outline-options">
-                      {question.options.map((option) => (
-                        <label key={option} className="outline-option">
+      {activeTab === 'chapters' && (
+        <div className="stack">
+          {sortedChapters.length === 0 && <div className="empty">暂无章节，请先上传细纲。</div>}
+          {sortedChapters.map((chapter) => {
+            const detail = findDetailChapter(chapter);
+            const status = chapter.computedStatus || computeChapterStatus(chapter);
+            const summaryComplete = chapter.summaryTasksComplete;
+            const showSummaryActions = Boolean(chapter.content?.trim());
+            return (
+              <div key={chapter.id} className="list-item chapter-item">
+                <div className="chapter-main">
+                  <button
+                    className="ghost"
+                    onClick={() => navigate(`/novel/${novelId}/chapter/${chapter.id}`)}
+                  >
+                    <div className="list-title chapter-title underline">{chapter.title}</div>
+                  </button>
+                  {detail?.detail && <div className="muted">细纲：{detail.detail}</div>}
+                </div>
+                <div className="chapter-meta">
+                  <div className={`status-pill ${statusColors[status] || 'gray'}`}>{status}</div>
+                  <div className="chapter-actions">
+                    {!showSummaryActions && (
+                      <>
+                        <button type="button" onClick={() => handleChapterNovelDownload(chapter)}>
+                          生成小说
+                        </button>
+                        <label className="file-button">
+                          上传小说
                           <input
-                            type="checkbox"
-                            checked={selection.selected.includes(option)}
-                            onChange={() => handleToggleOption(question.id, option)}
+                            type="file"
+                            accept="application/json"
+                            disabled={uploadingChapterId === chapter.id}
+                            onChange={(event) => handleChapterUpload(chapter.id, event)}
                           />
-                          {option}
                         </label>
-                      ))}
-                    </div>
-                    <label className="outline-other">
-                      {question.otherLabel}
-                      <input
-                        value={selection.other}
-                        onChange={(e) => handleOtherChange(question.id, e.target.value)}
-                        placeholder="请输入"
-                      />
-                    </label>
-                    <label className="outline-pending">
-                      <input
-                        type="checkbox"
-                        checked={selection.pending}
-                        onChange={() => handlePendingToggle(question.id)}
-                      />
-                      {question.pending}
-                    </label>
+                      </>
+                    )}
+                    {showSummaryActions && !summaryComplete && (
+                      <>
+                        {!chapter.summaryText && (
+                          <button type="button" onClick={() => handleGenerateSummary(chapter)}>
+                            生成摘要
+                          </button>
+                        )}
+                        {chapter.summaryText && (
+                          <button type="button" onClick={() => handleDownloadDetailOutlineFix(chapter)}>
+                            修改细纲
+                          </button>
+                        )}
+                        <label className="file-button">
+                          上传摘要
+                          <input
+                            type="file"
+                            accept="application/json"
+                            disabled={summaryUploadingChapterId === chapter.id}
+                            onChange={(event) => handleSummaryUpload(chapter, event)}
+                          />
+                        </label>
+                        {chapter.summaryText && (
+                          <label className="file-button">
+                            上传细纲
+                            <input type="file" accept="application/json" onChange={handleDetailOutlineUpload} />
+                          </label>
+                        )}
+                      </>
+                    )}
+                    {showSummaryActions && summaryComplete && (
+                      <Link to={`/novel/${novelId}/chapter/${chapter.id}`} className="primary-button">
+                        进入章节
+                      </Link>
+                    )}
                   </div>
-                );
-              })}
-            </div>
-            <div className="row">
-              <button type="button" className="primary" onClick={handleGeneratePrompt}>
-                确认并生成提示词
-              </button>
-              <button type="button" className="tab" onClick={() => setOutlineModalOpen(false)}>
-                取消
-              </button>
-            </div>
-          </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {promptModalOpen && (
-        <div className="modal">
-          <div className="modal-content large">
-            <h3>大纲提示词</h3>
-            <div className="prompt-layout">
-              <div className="prompt-actions">
-                <button type="button" onClick={handleCopyPrompt}>
-                  一键复制
+      {activeTab === 'worldview' && (
+        <div className="card subtle">
+          <div className="section-header">
+            <h3>世界观设定</h3>
+            <div className="row">
+              {!worldviewEditMode && (
+                <button type="button" className="ghost-button" onClick={() => setWorldviewEditMode(true)}>
+                  编辑
                 </button>
-                <button type="button" className="primary" onClick={handleSavePrompt}>
+              )}
+            </div>
+          </div>
+          {worldviewEditMode ? (
+            <div className="stack">
+              <textarea
+                className="large-input"
+                value={worldviewDraft}
+                onChange={(event) => setWorldviewDraft(event.target.value)}
+                placeholder="填写世界观设定"
+              />
+              <div className="row">
+                <button type="button" className="primary" onClick={handleSaveWorldview}>
                   保存
                 </button>
-                <button type="button" className="tab" onClick={() => setPromptModalOpen(false)}>
-                  关闭
+                <button
+                  type="button"
+                  className="tab"
+                  onClick={() => {
+                    setWorldviewDraft(novel.worldviewText || '');
+                    setWorldviewEditMode(false);
+                  }}
+                >
+                  取消
                 </button>
               </div>
-              <div className="prompt-content">
-                <textarea
-                  className="large-input"
-                  value={outlinePromptDraft}
-                  onChange={(e) => setOutlinePromptDraft(e.target.value)}
-                />
-                {outlineSummary.length > 0 && (
-                  <div className="prompt-summary">
-                    {outlineSummary.map((item) => (
-                      <div key={item.id} className="prompt-summary-item">
-                        <div className="label">{item.title}</div>
-                        <div className="muted">{item.answer}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
             </div>
-          </div>
+          ) : (
+            <div className="readonly-field multi-line">{novel.worldviewText || '暂无世界观设定。'}</div>
+          )}
         </div>
       )}
 
-      {outlineViewOpen && (
-        <div className="modal">
-          <div className="modal-content large">
+      {activeTab === 'outline' && (
+        <div className="stack">
+          <div className="card subtle">
             <div className="section-header">
               <h3>小说大纲</h3>
-              <div className="resource-header-actions">
+              <div className="row">
                 {!outlineEditMode && (
                   <button type="button" className="ghost-button" onClick={() => setOutlineEditMode(true)}>
                     修改
                   </button>
                 )}
-                <button type="button" className="tab" onClick={() => setOutlineViewOpen(false)}>
-                  关闭
-                </button>
+                <label className="file-button">
+                  上传大纲
+                  <input type="file" accept="application/json,text/plain" onChange={handleOutlineUpload} />
+                </label>
               </div>
             </div>
-            <div className="tabs">
-              {[
-                { key: 'outline', label: '小说大纲' },
-                { key: 'history', label: '大纲选择历史' }
-              ].map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  className={outlineViewTab === tab.key ? 'tab active' : 'tab'}
-                  onClick={() => setOutlineViewTab(tab.key)}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-            {outlineViewTab === 'outline' && (
-              <>
-                {outlineEditMode ? (
-                  <div className="stack">
-                    <textarea
-                      className="large-input"
-                      value={outlineDraft}
-                      onChange={(e) => setOutlineDraft(e.target.value)}
-                      placeholder="请输入小说大纲"
-                    />
-                    <div className="row">
-                      <button type="button" className="primary" onClick={handleSaveOutline}>
-                        保存
-                      </button>
-                      <button
-                        type="button"
-                        className="tab"
-                        onClick={() => {
-                          setOutlineDraft(novel.outlineText || '');
-                          setOutlineEditMode(false);
-                        }}
-                      >
-                        取消
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="readonly-field multi-line">{outlineDraft || '暂无大纲'}</div>
-                )}
-              </>
-            )}
-            {outlineViewTab === 'history' && (
+            {outlineEditMode ? (
               <div className="stack">
-                <div className="card subtle">
-                  <div className="section-header">
-                    <h4>提示词选择历史</h4>
-                  </div>
-                  {(novel.outlineSelectionHistory || []).length === 0 && (
-                    <div className="empty">暂无提示词选择记录。</div>
-                  )}
-                  {(novel.outlineSelectionHistory || []).map((entry) => (
-                    <div key={entry.id} className="card subtle">
-                      <div className="section-header">
-                        <div>
-                          <div className="label">记录时间</div>
-                          <div className="muted">{entry.createdAt}</div>
-                        </div>
-                        <div className="row">
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              if (!entry.prompt) return;
-                              try {
-                                await navigator.clipboard.writeText(entry.prompt);
-                                alert('提示词已复制');
-                              } catch (e) {
-                                alert('复制失败，请手动复制');
-                              }
-                            }}
-                          >
-                            复制提示词
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const blob = new Blob([JSON.stringify(entry, null, 2)], {
-                                type: 'application/json'
-                              });
-                              const url = URL.createObjectURL(blob);
-                              const link = document.createElement('a');
-                              link.href = url;
-                              link.download = `outline-selection-${entry.id}.json`;
-                              link.click();
-                              URL.revokeObjectURL(url);
-                            }}
-                          >
-                            导出 JSON
-                          </button>
-                        </div>
-                      </div>
-                      <div className="prompt-summary">
-                        {(entry.summary || []).map((item) => (
-                          <div key={item.id} className="prompt-summary-item">
-                            <div className="label">{item.title}</div>
-                            <div className="muted">{item.answer}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="card subtle">
-                  <div className="section-header">
-                    <h4>大纲文本历史</h4>
-                  </div>
-                  {(novel.outlineVersions || []).length === 0 && (
-                    <div className="empty">暂无大纲版本记录。</div>
-                  )}
-                  {(novel.outlineVersions || []).map((entry) => (
-                    <div key={`outline-${entry.version}`} className="card subtle">
-                      <div className="section-header">
-                        <div>
-                          <div className="label">版本 {entry.version}</div>
-                          <div className="muted">{entry.updatedAt}</div>
-                        </div>
-                        <div className="row">
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              if (!entry.outlineText) return;
-                              try {
-                                await navigator.clipboard.writeText(entry.outlineText);
-                                alert('大纲已复制');
-                              } catch (e) {
-                                alert('复制失败，请手动复制');
-                              }
-                            }}
-                          >
-                            复制大纲
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const blob = new Blob([JSON.stringify(entry, null, 2)], {
-                                type: 'application/json'
-                              });
-                              const url = URL.createObjectURL(blob);
-                              const link = document.createElement('a');
-                              link.href = url;
-                              link.download = `outline-version-${entry.version}.json`;
-                              link.click();
-                              URL.revokeObjectURL(url);
-                            }}
-                          >
-                            导出 JSON
-                          </button>
-                        </div>
-                      </div>
-                      <div className="readonly-field multi-line">
-                        {entry.outlineText || '暂无内容'}
-                      </div>
-                    </div>
-                  ))}
+                <textarea
+                  className="large-input"
+                  value={outlineDraft}
+                  onChange={(event) => setOutlineDraft(event.target.value)}
+                  placeholder="请输入小说大纲"
+                />
+                <div className="row">
+                  <button type="button" className="primary" onClick={handleSaveOutline}>
+                    保存
+                  </button>
+                  <button
+                    type="button"
+                    className="tab"
+                    onClick={() => {
+                      setOutlineDraft(novel.outlineText || '');
+                      setOutlineEditMode(false);
+                    }}
+                  >
+                    取消
+                  </button>
                 </div>
               </div>
+            ) : (
+              <div className="readonly-field multi-line">{novel.outlineText || '暂无大纲。'}</div>
             )}
+          </div>
+
+          <div className="card subtle">
+            <div className="section-header">
+              <div>
+                <h3>细纲与任务清单</h3>
+                <div className="muted">章节细纲以文件夹形式展示，右侧按钮可生成或上传细纲。</div>
+              </div>
+              <div className="row">
+                <button type="button" onClick={handleGenerateDetailOutline}>
+                  生成细纲
+                </button>
+                <label className="file-button">
+                  上传细纲
+                  <input type="file" accept="application/json" onChange={handleDetailOutlineUpload} />
+                </label>
+              </div>
+            </div>
+            {detailOutlineChapters.length === 0 && <div className="empty">暂无细纲内容。</div>}
+            <div className="detail-outline-list">
+              {detailOutlineChapters.map((detail) => {
+                const totalTasks = detail.tasks?.length || 0;
+                const completed = (detail.tasks || []).filter((task) => task.status === '已完成').length;
+                const progress = totalTasks ? Math.round((completed / totalTasks) * 100) : 0;
+                const expanded = detailExpanded[detail.id];
+                return (
+                  <div key={detail.id} className="detail-outline-card">
+                    <div className="detail-outline-header">
+                      <div>
+                        <div className="folder-title">{detail.title}</div>
+                        <div className="muted">任务完成度：{completed}/{totalTasks || 0}</div>
+                      </div>
+                      <div className="row">
+                        <button type="button" onClick={() => setDetailEdit(detail)}>
+                          修改
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() =>
+                            setDetailExpanded((prev) => ({ ...prev, [detail.id]: !prev[detail.id] }))
+                          }
+                        >
+                          ▽
+                        </button>
+                      </div>
+                    </div>
+                    <div className="progress-bar">
+                      <div className="progress-bar-inner" style={{ width: `${progress}%` }} />
+                    </div>
+                    <div className="detail-outline-body">
+                      <div className="readonly-field multi-line">{detail.detail || '暂无细纲描述'}</div>
+                      {expanded && (
+                        <div className="detail-outline-tasks">
+                          {(detail.tasks || []).length === 0 && <div className="empty">暂无任务。</div>}
+                          {(detail.tasks || []).map((task) => (
+                            <div key={task.id} className="task-row">
+                              <div>
+                                <div className="label">
+                                  {task.type}：{task.foreshadowTitle || task.foreshadowNumber || '伏笔任务'}
+                                </div>
+                                <div className="muted">伏笔编号：{task.foreshadowNumber || '未指定'}</div>
+                              </div>
+                              <div className={`status-pill ${task.status === '已完成' ? 'green' : 'orange'}`}>
+                                {task.status || '待完成'}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
 
-      {relationshipModalOpen && (
-        <div className="modal">
-          <div className="modal-content">
-            <div className="section-header">
-              <h3>总关系网</h3>
-              <div className="resource-header-actions">
-                <button type="button" className="ghost-button" onClick={handleRelationshipExport}>
-                  导出关系网
-                </button>
-                <label className="file-button">
-                  导入关系网
-                  <input type="file" accept="application/json" onChange={handleRelationshipImport} />
-                </label>
-                <button type="button" className="tab" onClick={() => setRelationshipModalOpen(false)}>
-                  关闭
-                </button>
-              </div>
+      {activeTab === 'foreshadow' && (
+        <div className="stack">
+          <div className="section-header">
+            <div>
+              <h3>伏笔管理</h3>
+              <div className="muted">管理伏笔描述、类型与回收状态。</div>
             </div>
-            <div className="stack">
-              {(() => {
-                const graph = novel.relationshipGraph || { nodes: [], relations: [] };
-                const relations = graph.relations || [];
-                const rawNodes = graph.nodes || [];
-                const relationNodes =
-                  rawNodes.length > 0
-                    ? rawNodes
-                    : Array.from(
-                        new Set(
-                          relations.flatMap((rel) => [
-                            rel.source,
-                            rel.sourceId,
-                            rel.from,
-                            rel.fromId,
-                            rel.sourceName,
-                            rel.target,
-                            rel.targetId,
-                            rel.to,
-                            rel.toId,
-                            rel.targetName
-                          ])
-                        )
-                      )
-                        .filter(Boolean)
-                        .map((name) => ({ id: name, name }));
-                if (relations.length === 0) {
-                  return <div className="empty">暂无关系网数据，可导 JSON 进行展示。</div>;
-                }
-                const characters = data.resources.characters || [];
-                const findImage = (node) => {
-                  const match = characters.find(
-                    (character) => character.id === node.id || character.name === node.name
-                  );
-                  if (!match) return '';
-                  const formViews = match.form?.[0]?.viewAssets || [];
-                  const metaViews = match.meta?.viewAssets || [];
-                  const front = formViews.find((asset) => asset.viewAngle === '正面');
-                  return front?.src || formViews?.[0]?.src || metaViews?.[0]?.src || match.images?.[0] || '';
-                };
-                const positions = relationNodes.map((node, index) => {
-                  const angle = (index / relationNodes.length) * Math.PI * 2;
-                  return {
-                    ...node,
-                    key: node.id || node.name || `node-${index}`,
-                    image: findImage(node),
-                    position: {
-                      x: 50 + 38 * Math.cos(angle),
-                      y: 50 + 38 * Math.sin(angle)
-                    }
-                  };
-                });
-                const nodeMap = new Map(
-                  positions.map((node) => [
-                    String(node.id || node.name),
-                    { x: node.position.x, y: node.position.y }
-                  ])
-                );
+            <button type="button" className="primary" onClick={handleForeshadowAdd}>
+              + 新增伏笔
+            </button>
+          </div>
+          <div className="foreshadow-table">
+            <div className="foreshadow-row foreshadow-header">
+              <div>编号</div>
+              <div>伏笔描述</div>
+              <div>伏笔类型</div>
+              <div>回收状态</div>
+              <div>操作</div>
+            </div>
+            <>
+              {(novel.foreshadows || []).map((item) => {
+                const expanded = foreshadowExpanded[item.id];
+                const numberLabel = `FP-${String(item.number || 0).padStart(3, '0')}`;
                 return (
-                  <div className="relation-board">
-                    <div className="relation-network">
-                      <svg className="relation-lines" viewBox="0 0 100 100" preserveAspectRatio="none">
-                        {relations.map((rel, index) => {
-                          const source =
-                            rel.source || rel.sourceId || rel.from || rel.fromId || rel.sourceName || '';
-                          const target =
-                            rel.target || rel.targetId || rel.to || rel.toId || rel.targetName || '';
-                          const sourcePos = nodeMap.get(String(source));
-                          const targetPos = nodeMap.get(String(target));
-                          if (!sourcePos || !targetPos) return null;
-                          return (
-                            <line
-                              key={`${source}-${target}-${index}`}
-                              x1={sourcePos.x}
-                              y1={sourcePos.y}
-                              x2={targetPos.x}
-                              y2={targetPos.y}
-                            />
-                          );
-                        })}
-                      </svg>
-                      {positions.map((node) => (
-                        <div
-                          key={node.key}
-                          className="relation-node rich"
-                          style={{ left: `${node.position.x}%`, top: `${node.position.y}%` }}
+                  <div key={item.id} className="foreshadow-card">
+                    <div className="foreshadow-row">
+                      <div className="foreshadow-number">{numberLabel}</div>
+                      <div>
+                        <input
+                          className="inline-input"
+                          value={item.description}
+                          onChange={(event) => handleForeshadowUpdate(item.id, { description: event.target.value })}
+                        />
+                      </div>
+                      <div>
+                        <select
+                          value={item.type}
+                          onChange={(event) => handleForeshadowUpdate(item.id, { type: event.target.value })}
                         >
-                          <div className="relation-node-avatar">
-                            {node.image ? <img src={node.image} alt={node.name} /> : <div className="placeholder" />}
-                          </div>
-                          <div className="relation-node-name">{node.name}</div>
-                        </div>
-                      ))}
+                          {foreshadowTypes.map((type) => (
+                            <option key={type} value={type}>
+                              {type}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <select
+                          value={item.status}
+                          onChange={(event) => handleForeshadowUpdate(item.id, { status: event.target.value })}
+                        >
+                          {foreshadowStatuses.map((status) => (
+                            <option key={status} value={status}>
+                              {status}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="row">
+                        <button type="button" onClick={() => handleForeshadowUpdate(item.id, { status: '已回收' })}>
+                          回收
+                        </button>
+                        <button type="button" className="ghost-button" onClick={() => handleForeshadowDelete(item.id)}>
+                          删除
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() =>
+                            setForeshadowExpanded((prev) => ({ ...prev, [item.id]: !prev[item.id] }))
+                          }
+                        >
+                          ▽
+                        </button>
+                      </div>
                     </div>
+                    {expanded && (
+                      <div className="foreshadow-detail">
+                        <label className="stack">
+                          伏笔描述
+                          <textarea
+                            value={item.description}
+                            onChange={(event) => handleForeshadowUpdate(item.id, { description: event.target.value })}
+                          />
+                        </label>
+                        <label className="stack">
+                          埋设规则
+                          <textarea
+                            value={item.buryRule}
+                            onChange={(event) => handleForeshadowUpdate(item.id, { buryRule: event.target.value })}
+                          />
+                        </label>
+                        <label className="stack">
+                          回收规则
+                          <textarea
+                            value={item.recoverRule}
+                            onChange={(event) => handleForeshadowUpdate(item.id, { recoverRule: event.target.value })}
+                          />
+                        </label>
+                      </div>
+                    )}
                   </div>
                 );
-              })()}
+              })}
+              {(novel.foreshadows || []).length === 0 && <div className="empty">暂无伏笔条目。</div>}
+            </>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'relationship' && (
+        <div className="stack">
+          <div className="section-header">
+            <div>
+              <h3>总关系网</h3>
+              <div className="muted">根据上传小说的关系网数据生成静态关系图。</div>
             </div>
+            <div className="row">
+              <label className="file-button">
+                导入关系网
+                <input
+                  type="file"
+                  accept="application/json"
+                  onChange={async (event) => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    try {
+                      const text = await file.text();
+                      const cleaned = text.replace(/^\uFEFF/, '').trim();
+                      if (!cleaned) {
+                        alert('关系网 JSON 为空');
+                        return;
+                      }
+                      let parsed = JSON.parse(cleaned);
+                      if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+                      updateNovel(novelId, { relationshipGraph: parsed });
+                    } catch (error) {
+                      alert('关系网 JSON 解析失败');
+                    } finally {
+                      event.target.value = '';
+                    }
+                  }}
+                />
+              </label>
+            </div>
+          </div>
+          {renderRelationshipGraph()}
+        </div>
+      )}
+
+      {detailEdit && (
+        <div className="modal">
+          <div className="modal-content">
+            <h3>修改细纲</h3>
+            <form
+              className="stack"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const nextDetailChapters = detailOutlineChapters.map((item) =>
+                  item.id === detailEdit.id ? { ...item, detail: detailEdit.detail } : item
+                );
+                updateNovel(novelId, { detailOutlineChapters: nextDetailChapters });
+                setDetailEdit(null);
+              }}
+            >
+              <label>
+                章节标题
+                <input value={detailEdit.title} disabled />
+              </label>
+              <label>
+                细纲内容
+                <textarea
+                  className="large-input"
+                  value={detailEdit.detail}
+                  onChange={(event) => setDetailEdit((prev) => ({ ...prev, detail: event.target.value }))}
+                />
+              </label>
+              <div className="row">
+                <button type="submit" className="primary">保存</button>
+                <button type="button" className="tab" onClick={() => setDetailEdit(null)}>
+                  取消
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

@@ -126,6 +126,10 @@ a {
   background: #f59e0b;
 }
 
+.status-pill.blue {
+  background: #3b82f6;
+}
+
 .status-pill.green {
   background: #22c55e;
 }

@@ -398,7 +398,6 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       const newFrame = { id: crypto.randomUUID(), label: `关键帧${nextFrames.length + 1}` };
       nextFrames.push(newFrame);
       return { ...shot, keyframes: nextFrames };
-      return { ...shot, keyframes: nextFrames };
     });
     updateShots(updated);
   };
@@ -504,6 +503,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     link.download = `${chapter.title || 'storyboard'}-video.json`;
     link.click();
     URL.revokeObjectURL(url);
+    updateChapter(novelId, chapter.id, { finalPackageDownloadedAt: Date.now() });
   };
 
   const handleStoryboardRuleExport = () => {
@@ -570,7 +570,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           </button>
         );
       })}
-      {items.length === 0 && <div className="empty">暂无资源，请先在资源库添加。</div>}
+      {items.length === 0 && <div className="empty">暂无资源，请先在资库添加。</div>}
     </div>
   );
 

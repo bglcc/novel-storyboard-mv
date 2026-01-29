@@ -8,7 +8,10 @@ const ruleGroups = [
     label: '生成小说',
     children: [
       { id: 'outline', label: '生成大纲', tool: '生成小说-大纲提示词' },
-      { id: 'novel', label: '生成小说', tool: '生成小说-正文规则' }
+      { id: 'novel', label: '生成小说', tool: '生成小说-正文规则' },
+      { id: 'detail-outline', label: '细纲规则库', tool: '细纲规则库' },
+      { id: 'foreshadow', label: '伏笔规则库', tool: '伏笔规则库' },
+      { id: 'summary', label: '摘要规则库', tool: '摘要规则库' }
     ]
   },
   {
@@ -83,6 +86,44 @@ const defaultRuleMap = {
       rules: '生成小说对应规则库内容'
     }
   },
+  细纲规则库: {
+    description: '细纲生成与任务清单的规则说明。',
+    overview: '用于生成章节细纲与伏笔任务清单的规范说明。',
+    tasks: ['生成章节细纲', '输出伏笔埋设/回收任务清单', '维护章节任务进度'],
+    exportSpec: {
+      chapters: '章节细纲（含任务清单）',
+      foreshadows: '伏笔条目（编号/类型/状态/规则）'
+    },
+    importSpec: {
+      outline: '小说大纲（文本）',
+      foreshadows: '伏笔资源库',
+      chapters: '细纲章节列表'
+    }
+  },
+  伏笔规则库: {
+    description: '伏笔管理与回收规则的规范说明。',
+    overview: '用于维护伏笔类型、状态、埋设与回收规则。',
+    tasks: ['新增伏笔条目', '维护伏笔埋设与回收规则', '追踪伏笔状态'],
+    exportSpec: {
+      foreshadows: '伏笔列表（编号/描述/类型/状态/规则）'
+    },
+    importSpec: {
+      foreshadows: '伏笔列表（编号/描述/类型/状态/规则）'
+    }
+  },
+  摘要规则库: {
+    description: '结果摘要的输出与校验规范。',
+    overview: '用于生成章节结果摘要并校验细纲任务完成情况。',
+    tasks: ['输出章节结果摘要', '回传任务完成状态', '校验伏笔埋设/回收进度'],
+    exportSpec: {
+      summaryText: '章节结果摘要文本',
+      tasks: '任务完成状态（与细纲任务对应）'
+    },
+    importSpec: {
+      detailOutline: '细纲任务清单',
+      summary: '章节结果摘要内容'
+    }
+  },
   '分镜头-规则库': {
     description: '分镜头阶段的规则包说明与导入规范。',
     overview: '用于生成分镜头脚本并补齐资源库需求。',
@@ -140,7 +181,7 @@ const defaultRuleMap = {
   角色资源: {
     description: '角色资源库与分镜头 AI / 图片回传交互规则说明。',
     overview: '用于角色基础信息、形态信息、关系网与成长史维护。',
-    tasks: ['补充角色基础信息', '回传角色形态与视角需求', '维护关系网与成长史'],
+    tasks: ['补充角色基信息', '回传角色形态与视角需求', '维护关系网与成长史'],
     exportSpec: {
       characterPackage: '角色资源包（图片压缩包）'
     },
@@ -486,7 +527,7 @@ const RuleLibrary = () => {
                       />
                     </label>
                     <label>
-                      导出内容说明（JSON）
+                      出内容说明（JSON）
                       <textarea
                         className="large-input"
                         value={draft.exportSpec}

@@ -219,6 +219,144 @@
   background: #fff;
 }
 
+.novel-detail .tab-bar {
+  margin: 16px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chapter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.summary-block {
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+}
+
+.detail-outline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.detail-outline-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 16px;
+  background: #fff;
+}
+
+.detail-outline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.folder-title {
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+  margin: 12px 0;
+}
+
+.progress-bar-inner {
+  height: 100%;
+  background: linear-gradient(90deg, #38bdf8, #4f46e5);
+}
+
+.detail-outline-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.detail-outline-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.task-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.foreshadow-table {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.foreshadow-row {
+  display: grid;
+  grid-template-columns: 120px 2fr 160px 160px 220px;
+  gap: 12px;
+  align-items: center;
+}
+
+.foreshadow-header {
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.foreshadow-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 12px;
+  background: #fff;
+}
+
+.foreshadow-number {
+  font-weight: 600;
+  color: #1e3a8a;
+}
+
+.inline-input {
+  width: 100%;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.foreshadow-detail {
+  margin-top: 12px;
+  display: grid;
+  gap: 12px;
+}
+
+.foreshadow-detail textarea {
+  min-height: 80px;
+}
+
+@media (max-width: 900px) {
+  .foreshadow-row {
+    grid-template-columns: 1fr;
+  }
+  .chapter-actions {
+    justify-content: flex-start;
+  }
+}
+
 .preview-editor-panel h5 {
   margin: 0 0 8px;
   font-size: 14px;
