@@ -61,10 +61,10 @@ const ChapterPage = () => {
         </div>
         {showOriginal && (
           <div className="original-box">
-            {chapter.summaryText && (
+            {chapter.recapText && (
               <div className="summary-block">
-                <div className="label">结果摘要</div>
-                <pre className="original-text">{chapter.summaryText}</pre>
+                <div className="label">前情提要</div>
+                <pre className="original-text">{chapter.recapText}</pre>
               </div>
             )}
             <div className="label">章节原文</div>

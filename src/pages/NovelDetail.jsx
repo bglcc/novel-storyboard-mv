@@ -30,6 +30,14 @@ const detailOutlineTemplate = {
           foreshadowNumber: 'FP-001',
           foreshadowTitle: '伏笔标题',
           status: '待完成'
+        },
+        {
+          id: 'task-002',
+          type: '资源运用',
+          resourceType: '角色',
+          resourceName: '角色A',
+          note: '章节关键角色登场',
+          status: '待完成'
         }
       ]
     }
@@ -58,11 +66,76 @@ const summaryTemplate = {
 
 const foreshadowTypes = ['大型伏笔', '中型伏笔', '小型伏笔'];
 const foreshadowStatuses = ['已回收', '正在推进', '已埋设', '未埋设'];
+const resourceTypeOptions = ['角色', '场景', '道具', '表情'];
+
+const parseOutlineChapters = (text) => {
+  if (!text) return [];
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  const headingRegex = /^(第[一二三四五六七八九十百千0-9]+章|Chapter\s*\d+|CHAPTER\s*\d+)/;
+  const lines = trimmed.split('\n').map((line) => line.trim()).filter(Boolean);
+  const hasHeadings = lines.some((line) => headingRegex.test(line));
+  const chunks = [];
+  if (hasHeadings) {
+    let current = null;
+    lines.forEach((line) => {
+      if (headingRegex.test(line)) {
+        if (current) chunks.push(current);
+        current = { title: line, detail: '' };
+      } else if (!current) {
+        current = { title: `章节 ${chunks.length + 1}`, detail: line };
+      } else {
+        current.detail = current.detail ? `${current.detail}\n${line}` : line;
+      }
+    });
+    if (current) chunks.push(current);
+  } else {
+    trimmed
+      .split(/\n\s*\n+/)
+      .map((block) => block.trim())
+      .filter(Boolean)
+      .forEach((block, index) => {
+        const [firstLine, ...rest] = block.split('\n');
+        const title = headingRegex.test(firstLine) ? firstLine : `章节 ${index + 1}`;
+        const detail = headingRegex.test(firstLine) ? rest.join('\n').trim() : block;
+        chunks.push({ title, detail });
+      });
+  }
+  return chunks.map((chunk, index) => ({
+    id: `outline-${index + 1}`,
+    title: chunk.title || `章节 ${index + 1}`,
+    detail: chunk.detail || ''
+  }));
+};
+
+const normalizeResourceType = (value) => {
+  if (!value) return resourceTypeOptions[0];
+  if (['角色', '人物', 'character', 'characters'].includes(value)) return '角色';
+  if (['场景', 'scene', 'scenes'].includes(value)) return '场景';
+  if (['道具', 'prop', 'props'].includes(value)) return '道具';
+  if (['表情', 'expression', 'expressions'].includes(value)) return '表情';
+  return value;
+};
+
+const mapResourceTypeToKey = (value) => {
+  switch (normalizeResourceType(value)) {
+    case '角色':
+      return 'characters';
+    case '场景':
+      return 'scenes';
+    case '道具':
+      return 'props';
+    case '表情':
+      return 'expressions';
+    default:
+      return '';
+  }
+};
 
 const NovelDetail = () => {
   const { novelId } = useParams();
   const navigate = useNavigate();
-  const { data, updateChapter, updateNovel, upsertRule } = useData();
+  const { data, updateChapter, updateNovel, upsertRule, ensurePlaceholderResources } = useData();
   const novel = data.novels.find((n) => n.id === novelId);
   const [activeTab, setActiveTab] = useState('outline');
   const [outlineEditMode, setOutlineEditMode] = useState(false);
@@ -93,16 +166,18 @@ const NovelDetail = () => {
         tool: '细纲规则库',
         description: '细纲生成与任务清单的规则说明。',
         parameters: {
-          overview: '用于生成章节细纲、伏笔埋设与回收任务清单的规则说明。',
-          tasks: ['生成章节细纲', '输出伏笔埋设/回收任务清单', '维护章节任务进度'],
+          overview: '用于生成章节细纲、伏笔埋设与资源运用任务清单的规则说明。',
+          tasks: ['生成章节细纲', '输出伏笔埋设/回收任务清单', '输出资源运用清单', '维护章节任务进度'],
           exportSpec: {
-            chapters: '章节细纲与任务清单',
-            foreshadows: '伏笔条目（编号/类型/状态/规则）'
+            chapters: '章节细纲与任务清单（含资源运用）',
+            foreshadows: '伏笔条目（编号/类型/状态/规则）',
+            resourceIndex: '简易资源名称清单（仅名称）'
           },
           importSpec: {
             outline: '小说大纲（文本）',
             foreshadows: '伏笔资源库',
-            chapters: '细纲章节列表'
+            chapters: '细纲章节列表',
+            resourceIndex: '资源名称清单（角色/场景/道具/表情）'
           }
         }
       },
@@ -156,6 +231,28 @@ const NovelDetail = () => {
   };
 
   const detailOutlineChapters = novel.detailOutlineChapters || [];
+  const outlineChapters = useMemo(
+    () => parseOutlineChapters(novel?.outlineText || ''),
+    [novel?.outlineText]
+  );
+
+  const mergedOutlineChapters = useMemo(() => {
+    const detailMap = new Map(detailOutlineChapters.map((detail) => [detail.title, detail]));
+    const merged = outlineChapters.map((outline) => {
+      const detail = detailMap.get(outline.title);
+      return {
+        id: detail?.id || outline.id,
+        title: outline.title,
+        detail: detail?.detail || outline.detail,
+        tasks: detail?.tasks || [],
+        hasDetailOutline: Boolean(detail)
+      };
+    });
+    const extraDetails = detailOutlineChapters.filter(
+      (detail) => !outlineChapters.some((outline) => outline.title === detail.title)
+    );
+    return [...merged, ...extraDetails.map((detail) => ({ ...detail, hasDetailOutline: true }))];
+  }, [detailOutlineChapters, outlineChapters]);
 
   const sortedChapters = useMemo(() => {
     const chapters = novel.chapters || [];
@@ -187,6 +284,11 @@ const NovelDetail = () => {
       return detailOutlineChapters.find((entry) => entry.id === chapter.detailOutlineId) || null;
     }
     return detailOutlineChapters.find((entry) => entry.title === chapter.title) || null;
+  };
+
+  const findOutlineChapter = (chapter) => {
+    if (!chapter) return null;
+    return outlineChapters.find((entry) => entry.title === chapter.title) || null;
   };
 
   const handleOutlineUpload = async (event) => {
@@ -238,23 +340,58 @@ const NovelDetail = () => {
       id: item.id || crypto.randomUUID(),
       title: item.title || `章节 ${index + 1}`,
       detail: item.detail || item.content || '',
-      tasks: Array.isArray(item.tasks)
-        ? item.tasks.map((task, taskIndex) => ({
-            id: task.id || `task-${index + 1}-${taskIndex + 1}`,
-            type: task.type || task.action || '埋设',
-            foreshadowNumber: task.foreshadowNumber || task.foreshadowNo || '',
-            foreshadowTitle: task.foreshadowTitle || task.foreshadow || '',
-            status: task.status || (task.completed ? '已完成' : '待完成')
-          }))
-        : []
+      tasks: [
+        ...(Array.isArray(item.tasks)
+          ? item.tasks.map((task, taskIndex) => ({
+              id: task.id || `task-${index + 1}-${taskIndex + 1}`,
+              type: task.type || task.action || '埋设',
+              foreshadowNumber: task.foreshadowNumber || task.foreshadowNo || '',
+              foreshadowTitle: task.foreshadowTitle || task.foreshadow || '',
+              resourceType: normalizeResourceType(task.resourceType || task.resourceCategory || ''),
+              resourceName: task.resourceName || task.resource || '',
+              note: task.note || task.description || '',
+              status: task.status || (task.completed ? '已完成' : '待完成')
+            }))
+          : []),
+        ...(Array.isArray(item.resourceUsage || item.resources)
+          ? (item.resourceUsage || item.resources).map((resource, resourceIndex) => ({
+              id: resource.id || `resource-${index + 1}-${resourceIndex + 1}`,
+              type: '资源运用',
+              resourceType: normalizeResourceType(resource.resourceType || resource.type || resource.category || ''),
+              resourceName: resource.resourceName || resource.name || '',
+              note: resource.note || resource.description || '',
+              status: resource.status || (resource.completed ? '已完成' : '待完成')
+            }))
+          : [])
+      ]
     }));
   };
 
   const handleGenerateDetailOutline = () => {
+    const detailTitles = new Set(detailOutlineChapters.map((detail) => detail.title));
+    const pendingOutlines = outlineChapters.filter((outline) => !detailTitles.has(outline.title));
+    const nextBatch = (pendingOutlines.length ? pendingOutlines : outlineChapters).slice(0, 5);
+    const fallbackChapters = Array.from({ length: 5 }).map((_, index) => ({
+      title: `章节 ${detailOutlineChapters.length + index + 1}`,
+      outline: ''
+    }));
+    const resourceIndex = {
+      characters: (data.resources.characters || []).map((item) => item.name),
+      scenes: (data.resources.scenes || []).map((item) => item.name),
+      props: (data.resources.props || []).map((item) => item.name),
+      expressions: (data.resources.expressions || []).map((item) => item.name)
+    };
     const payload = {
       outlineText: novel.outlineText || '',
-      chapters: detailOutlineChapters.length ? detailOutlineChapters : detailOutlineTemplate.chapters,
-      foreshadows: (novel.foreshadows || []).length ? novel.foreshadows : detailOutlineTemplate.foreshadows
+      chapters: nextBatch.length
+        ? nextBatch.map((chapter) => ({
+            title: chapter.title,
+            outline: chapter.detail || ''
+          }))
+        : fallbackChapters,
+      foreshadows: (novel.foreshadows || []).length ? novel.foreshadows : detailOutlineTemplate.foreshadows,
+      resourceIndex,
+      existingDetailOutline: detailOutlineChapters
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -264,7 +401,6 @@ const NovelDetail = () => {
     link.click();
     URL.revokeObjectURL(url);
   };
-
   const handleDetailOutlineUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -281,6 +417,24 @@ const NovelDetail = () => {
         parsed.detailOutlineChapters || parsed.chapters || parsed.detailOutline || []
       );
       const foreshadows = Array.isArray(parsed.foreshadows) ? parsed.foreshadows : novel.foreshadows || [];
+      const resourceTasks = detailChapters
+        .flatMap((chapter) => chapter.tasks || [])
+        .filter((task) => task.type === '资源运用' && task.resourceName);
+      const missingResources = [];
+      resourceTasks.forEach((task) => {
+        const key = mapResourceTypeToKey(task.resourceType);
+        if (!key) return;
+        const exists = (data.resources[key] || []).some((item) => item.name === task.resourceName);
+        if (!exists) {
+          missingResources.push({
+            type: key,
+            name: task.resourceName
+          });
+        }
+      });
+      if (missingResources.length > 0) {
+        ensurePlaceholderResources(missingResources, novelId);
+      }
       const existingChapters = novel.chapters || [];
       const nextChapters = detailChapters.map((detail, index) => {
         const match = existingChapters.find((chapter) => chapter.detailOutlineId === detail.id)
@@ -339,6 +493,27 @@ const NovelDetail = () => {
 
   const handleChapterNovelDownload = (chapter) => {
     const detail = findDetailChapter(chapter);
+    const resourceTasks = (detail?.tasks || []).filter((task) => task.type === '资源运用' && task.resourceName);
+    const resourceNames = resourceTasks.reduce(
+      (acc, task) => {
+        const key = mapResourceTypeToKey(task.resourceType);
+        if (!key) return acc;
+        acc[key].add(task.resourceName);
+        return acc;
+      },
+      {
+        characters: new Set(),
+        scenes: new Set(),
+        props: new Set(),
+        expressions: new Set()
+      }
+    );
+    const resourceSubset = {
+      characters: (data.resources.characters || []).filter((item) => resourceNames.characters.has(item.name)),
+      scenes: (data.resources.scenes || []).filter((item) => resourceNames.scenes.has(item.name)),
+      props: (data.resources.props || []).filter((item) => resourceNames.props.has(item.name)),
+      expressions: (data.resources.expressions || []).filter((item) => resourceNames.expressions.has(item.name))
+    };
     const payload = {
       novel: {
         id: novel.id,
@@ -350,8 +525,10 @@ const NovelDetail = () => {
         id: chapter.id,
         title: chapter.title,
         detailOutline: detail || {},
-        content: chapter.content || ''
+        content: chapter.content || '',
+        resourceUsage: resourceTasks
       },
+      resources: resourceSubset,
       foreshadows: novel.foreshadows || [],
       relationshipGraph: novel.relationshipGraph || { nodes: [], relations: [] },
       rules: (data.rules || []).filter((rule) => (rule.tool || '').includes('生成小说'))
@@ -427,28 +604,63 @@ const NovelDetail = () => {
       const detail = findDetailChapter(chapter);
       const requiredTasks = detail?.tasks || [];
       const mergedTasks = requiredTasks.map((task) => {
-        const match = incomingTasks.find(
-          (item) => item.id === task.id || item.foreshadowNumber === task.foreshadowNumber
-        );
+        const match = incomingTasks.find((item) => {
+          if (item.id && item.id === task.id) return true;
+          if (task.type === '资源运用') {
+            return (
+              item.resourceName === task.resourceName &&
+              normalizeResourceType(item.resourceType || item.resourceCategory) === normalizeResourceType(task.resourceType)
+            );
+          }
+          return item.foreshadowNumber === task.foreshadowNumber;
+        });
         const status = match?.status || (match?.completed ? '已完成' : task.status || '待完成');
         return { ...task, status };
       });
       const tasksComplete = mergedTasks.length
         ? mergedTasks.every((task) => task.status === '已完成')
         : Boolean(parsed.tasksComplete || parsed.completed || false);
+      const resolveNextChapter = () => {
+        if (!detailOutlineChapters.length) return null;
+        const currentDetailIndex = detailOutlineChapters.findIndex(
+          (entry) => entry.id === detail?.id || entry.title === chapter.title
+        );
+        if (currentDetailIndex >= 0 && currentDetailIndex < detailOutlineChapters.length - 1) {
+          const nextDetail = detailOutlineChapters[currentDetailIndex + 1];
+          return (novel.chapters || []).find(
+            (item) => item.detailOutlineId === nextDetail.id || item.title === nextDetail.title
+          );
+        }
+        const chapterIndex = (novel.chapters || []).findIndex((item) => item.id === chapter.id);
+        if (chapterIndex >= 0 && chapterIndex < (novel.chapters || []).length - 1) {
+          return (novel.chapters || [])[chapterIndex + 1];
+        }
+        return null;
+      };
+      const nextChapter = resolveNextChapter();
       updateChapter(novelId, chapter.id, {
         summaryText,
         summaryTasks: mergedTasks,
         summaryTasksComplete: tasksComplete,
         summaryUpdatedAt: new Date().toISOString()
       });
+      if (nextChapter) {
+        updateChapter(novelId, nextChapter.id, {
+          recapText: summaryText,
+          recapSourceChapterId: chapter.id
+        });
+      }
       if (detail) {
         const nextDetailChapters = detailOutlineChapters.map((item) =>
           item.id === detail.id ? { ...item, tasks: mergedTasks } : item
         );
         updateNovel(novelId, { detailOutlineChapters: nextDetailChapters });
       }
-      alert(tasksComplete ? '摘要已确认，任务完成' : '摘要已上传，仍有未完成任务');
+      if (!nextChapter) {
+        alert('摘要已上传，但未找到下一章承接前情提要');
+      } else {
+        alert(tasksComplete ? '摘要已确认，任务完成' : '摘要已上传，仍有未完成任务');
+      }
     } catch (error) {
       alert('摘要解析失败');
     } finally {
@@ -602,12 +814,12 @@ const NovelDetail = () => {
           </button>
         ))}
       </div>
-
       {activeTab === 'chapters' && (
         <div className="stack">
           {sortedChapters.length === 0 && <div className="empty">暂无章节，请先上传细纲。</div>}
           {sortedChapters.map((chapter) => {
             const detail = findDetailChapter(chapter);
+            const outline = findOutlineChapter(chapter);
             const status = chapter.computedStatus || computeChapterStatus(chapter);
             const summaryComplete = chapter.summaryTasksComplete;
             const showSummaryActions = Boolean(chapter.content?.trim());
@@ -620,7 +832,11 @@ const NovelDetail = () => {
                   >
                     <div className="list-title chapter-title underline">{chapter.title}</div>
                   </button>
-                  {detail?.detail && <div className="muted">细纲：{detail.detail}</div>}
+                  {detail?.detail ? (
+                    <div className="muted">细纲：{detail.detail}</div>
+                  ) : (
+                    outline?.detail && <div className="muted">大纲：{outline.detail}</div>
+                  )}
                 </div>
                 <div className="chapter-meta">
                   <div className={`status-pill ${statusColors[status] || 'gray'}`}>{status}</div>
@@ -787,9 +1003,9 @@ const NovelDetail = () => {
                 </label>
               </div>
             </div>
-            {detailOutlineChapters.length === 0 && <div className="empty">暂无细纲内容。</div>}
+            {mergedOutlineChapters.length === 0 && <div className="empty">暂无细纲内容。</div>}
             <div className="detail-outline-list">
-              {detailOutlineChapters.map((detail) => {
+              {mergedOutlineChapters.map((detail) => {
                 const totalTasks = detail.tasks?.length || 0;
                 const completed = (detail.tasks || []).filter((task) => task.status === '已完成').length;
                 const progress = totalTasks ? Math.round((completed / totalTasks) * 100) : 0;
@@ -799,12 +1015,17 @@ const NovelDetail = () => {
                     <div className="detail-outline-header">
                       <div>
                         <div className="folder-title">{detail.title}</div>
-                        <div className="muted">任务完成度：{completed}/{totalTasks || 0}</div>
+                        <div className="muted">
+                          {detail.hasDetailOutline ? '细纲已生成' : '仅显示大纲'}
+                          {detail.hasDetailOutline && ` · 任务完成度：${completed}/${totalTasks || 0}`}
+                        </div>
                       </div>
                       <div className="row">
-                        <button type="button" onClick={() => setDetailEdit(detail)}>
-                          修改
-                        </button>
+                        {detail.hasDetailOutline && (
+                          <button type="button" onClick={() => setDetailEdit(detail)}>
+                            修改
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="ghost-button"
@@ -816,21 +1037,34 @@ const NovelDetail = () => {
                         </button>
                       </div>
                     </div>
-                    <div className="progress-bar">
-                      <div className="progress-bar-inner" style={{ width: `${progress}%` }} />
-                    </div>
+                    {detail.hasDetailOutline && (
+                      <div className="progress-bar">
+                        <div className="progress-bar-inner" style={{ width: `${progress}%` }} />
+                      </div>
+                    )}
                     <div className="detail-outline-body">
-                      <div className="readonly-field multi-line">{detail.detail || '暂无细纲描述'}</div>
-                      {expanded && (
+                      <div className="readonly-field multi-line">
+                        {detail.detail || (detail.hasDetailOutline ? '暂无细纲描述' : '暂无大纲内容')}
+                      </div>
+                      {expanded && detail.hasDetailOutline && (
                         <div className="detail-outline-tasks">
                           {(detail.tasks || []).length === 0 && <div className="empty">暂无任务。</div>}
                           {(detail.tasks || []).map((task) => (
                             <div key={task.id} className="task-row">
                               <div>
                                 <div className="label">
-                                  {task.type}：{task.foreshadowTitle || task.foreshadowNumber || '伏笔任务'}
+                                  {task.type}：
+                                  {task.type === '资源运用'
+                                    ? `${task.resourceName || '未指定资源'}`
+                                    : task.foreshadowTitle || task.foreshadowNumber || '伏笔任务'}
                                 </div>
-                                <div className="muted">伏笔编号：{task.foreshadowNumber || '未指定'}</div>
+                                {task.type === '资源运用' ? (
+                                  <div className="muted">
+                                    类型：{task.resourceType || '未指定'} {task.note ? `· ${task.note}` : ''}
+                                  </div>
+                                ) : (
+                                  <div className="muted">伏笔编号：{task.foreshadowNumber || '未指定'}</div>
+                                )}
                               </div>
                               <div className={`status-pill ${task.status === '已完成' ? 'green' : 'orange'}`}>
                                 {task.status || '待完成'}
@@ -847,7 +1081,6 @@ const NovelDetail = () => {
           </div>
         </div>
       )}
-
       {activeTab === 'foreshadow' && (
         <div className="stack">
           <div className="section-header">

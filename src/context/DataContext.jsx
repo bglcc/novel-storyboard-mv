@@ -56,6 +56,8 @@ export const DataProvider = ({ children }) => {
               summaryTasks: chapter.summaryTasks || [],
               summaryTasksComplete: chapter.summaryTasksComplete || false,
               summaryUpdatedAt: chapter.summaryUpdatedAt || null,
+              recapText: chapter.recapText || '',
+              recapSourceChapterId: chapter.recapSourceChapterId || '',
               finalPackageDownloadedAt: chapter.finalPackageDownloadedAt || null,
               detailOutlineId: chapter.detailOutlineId || ''
             }))
@@ -186,6 +188,8 @@ export const DataProvider = ({ children }) => {
       summaryTasks: [],
       summaryTasksComplete: false,
       summaryUpdatedAt: null,
+      recapText: '',
+      recapSourceChapterId: '',
       finalPackageDownloadedAt: null,
       detailOutlineId: ''
     };

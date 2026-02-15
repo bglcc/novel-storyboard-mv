@@ -401,7 +401,6 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     });
     updateShots(updated);
   };
-
   const handleDeleteKeyframe = (shotId, keyframeId) => {
     const updated = (chapter.storyboards || []).map((shot) => {
       if (shot.id !== shotId) return shot;
@@ -538,6 +537,36 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     URL.revokeObjectURL(url);
   };
 
+  const handlePreviewCompositionExport = () => {
+    const payload = {
+      storyboards: chapter.storyboards || [],
+      previewParams: (chapter.storyboards || []).map((shot) => ({
+        shotNumber: shot.shotNumber,
+        description: shot.description || '',
+        shotType: shot.shotType || '',
+        cameraAngle: shot.cameraAngle || '',
+        cameraMovement: shot.cameraMovement || '',
+        scene: shot.scene || '',
+        characters: shot.characters || [],
+        props: shot.props || [],
+        composition: shot.composition || []
+      })),
+      resources: {
+        characters: data.resources.characters || [],
+        scenes: data.resources.scenes || [],
+        props: data.resources.props || [],
+        expressions: data.resources.expressions || []
+      }
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${chapter.title || 'storyboard'}-preview-compose.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const toggleResourceSelection = (shotId, field, name) => {
     const shot = (chapter.storyboards || []).find((item) => item.id === shotId);
     if (!shot) return;
@@ -653,6 +682,9 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           <button onClick={handleDownload}>下载分镜数据</button>
           <button type="button" onClick={handleStoryboardRuleExport}>
             生成分镜头规则库
+          </button>
+          <button type="button" onClick={handlePreviewCompositionExport}>
+            拼合预览图
           </button>
           <button type="button" onClick={handleVideoPackageDownload}>
             生成视频
