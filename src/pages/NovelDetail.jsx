@@ -68,6 +68,65 @@ const foreshadowTypes = ['大型伏笔', '中型伏笔', '小型伏笔'];
 const foreshadowStatuses = ['已回收', '正在推进', '已埋设', '未埋设'];
 const resourceTypeOptions = ['角色', '场景', '道具', '表情'];
 
+const parseLenientJson = (rawText) => {
+  if (!rawText) throw new Error('empty json text');
+  const withNoBom = rawText
+    .replace(/^\uFEFF/, '')
+    .replace(/\u0000/g, '')
+    .trim();
+  if (!withNoBom) throw new Error('empty json text');
+
+  const withoutFence = withNoBom
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+
+  const normalizedBoundaryQuotes = withoutFence
+    .replace(/^[“]/, '"')
+    .replace(/[”]$/, '"')
+    .replace(/^[‘]/, "'")
+    .replace(/[’]$/, "'")
+    .trim();
+
+  const firstBrace = withoutFence.search(/[\[{]/);
+  const lastBrace = Math.max(withoutFence.lastIndexOf('}'), withoutFence.lastIndexOf(']'));
+  const extractedJson = firstBrace >= 0 && lastBrace > firstBrace
+    ? withoutFence.slice(firstBrace, lastBrace + 1).trim()
+    : '';
+
+  const candidates = [withNoBom, withoutFence, normalizedBoundaryQuotes, extractedJson].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      let parsed = JSON.parse(candidate);
+      let depth = 0;
+      while (typeof parsed === 'string' && depth < 2) {
+        parsed = JSON.parse(parsed);
+        depth += 1;
+      }
+      if (!parsed || typeof parsed !== 'object') {
+        throw new Error('parsed value is not an object');
+      }
+      return parsed;
+    } catch (error) {
+      // continue trying the next candidate
+    }
+  }
+
+  throw new Error('json parse failed');
+};
+
+const extractContentFromBrokenJson = (rawText) => {
+  if (!rawText) return '';
+  const contentMatch = rawText.match(/"content"\s*:\s*"([\s\S]*?)"(?:\s*,|\s*})/);
+  if (!contentMatch) return '';
+  try {
+    return JSON.parse(`"${contentMatch[1]}"`);
+  } catch (error) {
+    return contentMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+  }
+};
+
 const parseOutlineChapters = (text) => {
   if (!text) return [];
   const trimmed = text.trim();
@@ -270,7 +329,7 @@ const NovelDetail = () => {
         const aPriority = chapterStatusPriority[a.computedStatus] || 99;
         const bPriority = chapterStatusPriority[b.computedStatus] || 99;
         if (aPriority !== bPriority) return aPriority - bPriority;
-        if (aPriority === chapterStatusPriority['已完成']) {
+        if (aPriority === chapterStatusPriority['完成']) {
           return (b.finalPackageDownloadedAt || 0) - (a.finalPackageDownloadedAt || 0);
         }
         if (a.outlineIndex !== b.outlineIndex) return a.outlineIndex - b.outlineIndex;
@@ -411,8 +470,7 @@ const NovelDetail = () => {
         alert('细纲内容为空');
         return;
       }
-      let parsed = JSON.parse(cleaned);
-      if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+      const parsed = parseLenientJson(cleaned);
       const detailChapters = normalizeDetailOutlineChapters(
         parsed.detailOutlineChapters || parsed.chapters || parsed.detailOutline || []
       );
@@ -548,13 +606,19 @@ const NovelDetail = () => {
     try {
       setUploadingChapterId(chapterId);
       const text = await file.text();
-      const cleaned = text.replace(/^\uFEFF/, '').trim();
+      const cleaned = text.replace(/^\uFEFF/, '').replace(/\u0000/g, '').trim();
       if (!cleaned) {
         alert('小说内容为空');
         return;
       }
-      let parsed = JSON.parse(cleaned);
-      if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+      let parsed;
+      try {
+        parsed = parseLenientJson(cleaned);
+      } catch (error) {
+        const fallbackContent = extractContentFromBrokenJson(cleaned);
+        if (!fallbackContent) throw error;
+        parsed = { content: fallbackContent };
+      }
       const nextContent = parsed.content || parsed.text || parsed.chapter?.content || parsed.chapter?.text || '';
       const nextTitle = parsed.title || parsed.chapter?.title || '';
       const updates = { content: nextContent || '' };
@@ -562,7 +626,7 @@ const NovelDetail = () => {
       updateChapter(novelId, chapterId, updates);
       alert('章节内容已更新');
     } catch (error) {
-      alert('小说内容解析失败');
+      alert(`小说内容解析失败：${error?.message || '请检查 JSON 是否为 UTF-8 编码'}`);
     } finally {
       setUploadingChapterId('');
       event.target.value = '';
@@ -597,8 +661,7 @@ const NovelDetail = () => {
         alert('摘要内容为空');
         return;
       }
-      let parsed = JSON.parse(cleaned);
-      if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+      const parsed = parseLenientJson(cleaned);
       const summaryText = parsed.summaryText || parsed.summary || parsed.text || '';
       const incomingTasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
       const detail = findDetailChapter(chapter);
@@ -1214,8 +1277,7 @@ const NovelDetail = () => {
                         alert('关系网 JSON 为空');
                         return;
                       }
-                      let parsed = JSON.parse(cleaned);
-                      if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+                      const parsed = parseLenientJson(cleaned);
                       updateNovel(novelId, { relationshipGraph: parsed });
                     } catch (error) {
                       alert('关系网 JSON 解析失败');

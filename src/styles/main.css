@@ -636,3 +636,23 @@ textarea.large-input {
   border-radius: 999px;
   font-size: 12px;
 }
+
+
+.modal-content.missing-resources-modal {
+  max-height: min(78vh, 720px);
+  display: flex;
+  flex-direction: column;
+}
+
+.missing-resources-body {
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.missing-resources-body ul {
+  margin: 0;
+  padding-left: 18px;
+}

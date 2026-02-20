@@ -1,46 +1,16 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React from 'react';
 import { useParams } from 'react-router-dom';
 import StoryboardEditor from '../components/StoryboardEditor';
 import { useData } from '../context/DataContext';
 import '../styles/novel.css';
 
-const statusColors = {
-  未录入: 'gray',
-  已录入: 'blue',
-  待完成: 'orange',
-  已完成: 'green'
-};
-
 const ChapterPage = () => {
   const { novelId, chapterId } = useParams();
-  const { data, updateChapter } = useData();
-  const novel = data.novels.find((n) => n.id === novelId);
-  const chapter = novel?.chapters.find((c) => c.id === chapterId);
-  const [content, setContent] = useState(chapter?.content || '');
-  const [lastSaved, setLastSaved] = useState(chapter?.storyboardUpdatedAt || null);
-  const [showOriginal, setShowOriginal] = useState(false);
-  const [editModalOpen, setEditModalOpen] = useState(false);
+  const { data } = useData();
+  const novel = data.novels.find((item) => item.id === novelId);
+  const chapter = novel?.chapters.find((item) => item.id === chapterId);
 
-  useEffect(() => {
-    setContent(chapter?.content || '');
-    setLastSaved(chapter?.storyboardUpdatedAt || null);
-  }, [chapterId, novelId, chapter]);
-
-  if (!chapter || !novel) return <div className="card">未找到章节。</div>;
-
-  const computedStatus = useMemo(() => {
-    if (!chapter) return '未录入';
-    if (chapter.finalPackageDownloadedAt) return '已完成';
-    if ((chapter.storyboards || []).length > 0) return '待完成';
-    if ((chapter.content || '').trim()) return '已录入';
-    return '未录入';
-  }, [chapter]);
-
-  useEffect(() => {
-    if (chapter && chapter.status !== computedStatus) {
-      updateChapter(novelId, chapterId, { status: computedStatus });
-    }
-  }, [chapter, chapterId, computedStatus, novelId, updateChapter]);
+  if (!novel || !chapter) return <div className="card">未找到章节。</div>;
 
   return (
     <div className="stack">
@@ -48,62 +18,11 @@ const ChapterPage = () => {
         <h2>
           {novel.title} / {chapter.title}
         </h2>
-        <div className="row space-between">
-          <div className={`status-pill ${statusColors[computedStatus] || 'gray'}`}>章节状态：{computedStatus}</div>
-          <div className="row">
-            <button type="button" onClick={() => setShowOriginal((v) => !v)}>
-              {showOriginal ? '收起' : '展开'}
-            </button>
-            <button type="button" className="tab" onClick={() => setEditModalOpen(true)}>
-              编辑
-            </button>
-          </div>
-        </div>
-        {showOriginal && (
-          <div className="original-box">
-            {chapter.recapText && (
-              <div className="summary-block">
-                <div className="label">前情提要</div>
-                <pre className="original-text">{chapter.recapText}</pre>
-              </div>
-            )}
-            <div className="label">章节原文</div>
-            <pre className="original-text">{content || '尚未填写原文'}</pre>
-          </div>
-        )}
+        <p className="muted">
+          当前章节采用“分镜驱动”模式：先完成分镜头大纲与细纲，再进 L1-L4 资源补齐与素材上传。
+        </p>
       </div>
       <StoryboardEditor novelId={novelId} chapter={chapter} />
-
-      {editModalOpen && (
-        <div className="modal">
-          <div className="modal-content">
-            <h3>编辑章节原文</h3>
-            <form
-              className="stack"
-              onSubmit={(e) => {
-                e.preventDefault();
-                updateChapter(novelId, chapterId, { content });
-                setEditModalOpen(false);
-                setLastSaved(Date.now());
-              }}
-            >
-              <textarea
-                className="large-input"
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="输入章节原文"
-                required
-              />
-              <div className="row">
-                <button type="submit" className="primary">保存</button>
-                <button type="button" className="tab" onClick={() => setEditModalOpen(false)}>
-                  取消
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

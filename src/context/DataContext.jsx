@@ -5,95 +5,172 @@ import { getImageById, storeImageData } from '../utils/imageStore';
 const DataContext = createContext();
 const STORAGE_KEY = 'novel-storyboard-data';
 
+const defaultResources = {
+  characters: [],
+  expressions: [],
+  scenes: [],
+  props: [],
+  animations: [],
+  music: [],
+  voiceovers: []
+};
+
 const defaultData = {
   novels: [],
-  resources: {
-    characters: [],
-    expressions: [],
-    scenes: [],
-    props: [],
-    animations: [],
-    music: [],
-    voiceovers: []
-  },
+  resources: defaultResources,
   rules: []
+};
+
+const createDefaultChapter = ({ id, title, content = '' } = {}) => ({
+  id: id || uuidv4(),
+  title: title || '未命名章节',
+  status: '细纲处理中',
+  content,
+  detailOutlineId: '',
+  storyboardUpdatedAt: null,
+  finalPackageDownloadedAt: null,
+  storyboardOutlineItems: [],
+  storyboardOutlineUpdatedAt: null,
+  storyboardShots: [],
+  storyboardLevelGuide: {
+    L1: '单一图层静态镜头：补齐资源->下载生图->上传图片',
+    L2: '资源拟动镜头：补齐资源后即可完成',
+    L3: '复杂独立动作镜头：补齐资源->生图->生视频',
+    L4: '多人动态交互镜头：补齐双人交互资源后即可完成'
+  },
+  editingWorkflow: {
+    clipExportReady: false,
+    clipScriptText: '',
+    clipScriptUpdatedAt: null
+  }
+});
+
+const normalizeShotResource = (resource) => ({
+  id: resource.id || uuidv4(),
+  type: resource.type || 'characters',
+  name: resource.name || '未命名资源',
+  subType: resource.subType || '',
+  status: resource.status || 'missing',
+  fileName: resource.fileName || '',
+  localPath: resource.localPath || '',
+  remoteUrl: resource.remoteUrl || '',
+  prompt: resource.prompt || '',
+  preview: resource.preview || '',
+  owner: resource.owner || '',
+  updatedAt: resource.updatedAt || null
+});
+
+const normalizeShot = (shot, index) => ({
+  id: shot.id || uuidv4(),
+  shotNumber: shot.shotNumber || `${index + 1}`,
+  outlineIndex: Number.isFinite(shot.outlineIndex) ? shot.outlineIndex : index,
+  title: shot.title || `镜 ${index + 1}`,
+  synopsis: shot.synopsis || shot.description || '',
+  level: ['L1', 'L2', 'L3', 'L4'].includes(shot.level) ? shot.level : 'L1',
+  shotType: shot.shotType || '',
+  cameraAngle: shot.cameraAngle || '',
+  sceneDescription: shot.sceneDescription || '',
+  shotTime: shot.shotTime || '',
+  visualDescription: shot.visualDescription || '',
+  editMethod: shot.editMethod || '',
+  keyframesEnabled: Boolean(shot.keyframesEnabled),
+  keyframes: Array.isArray(shot.keyframes) ? shot.keyframes : [],
+  resources: Array.isArray(shot.resources) ? shot.resources.map(normalizeShotResource) : [],
+  imageAsset: shot.imageAsset || { fileName: '', localPath: '', remoteUrl: '', preview: '', updatedAt: null },
+  videoAsset: shot.videoAsset || { fileName: '', localPath: '', remoteUrl: '', preview: '', updatedAt: null },
+  completed: Boolean(shot.completed),
+  completedAt: shot.completedAt || null
+});
+
+const normalizeChapter = (chapter) => {
+  const base = createDefaultChapter(chapter);
+  const shots = Array.isArray(chapter.storyboardShots)
+    ? chapter.storyboardShots.map(normalizeShot)
+    : Array.isArray(chapter.storyboards)
+      ? chapter.storyboards.map((shot, index) =>
+          normalizeShot(
+            {
+              ...shot,
+              synopsis: shot.description || '',
+              visualDescription: shot.sceneDescription || '',
+              editMethod: '',
+              resources: [
+                ...(shot.scene ? [{ type: 'scenes', name: shot.scene, status: 'uploaded' }] : []),
+                ...((shot.characters || []).map((name) => ({ type: 'characters', name, status: 'uploaded' })) || []),
+                ...((shot.props || []).map((name) => ({ type: 'props', name, status: 'uploaded' })) || [])
+              ]
+            },
+            index
+          )
+        )
+      : [];
+
+  return {
+    ...base,
+    ...chapter,
+    storyboardOutlineItems: Array.isArray(chapter.storyboardOutlineItems)
+      ? chapter.storyboardOutlineItems
+      : [],
+    storyboardShots: shots,
+    editingWorkflow: {
+      ...base.editingWorkflow,
+      ...(chapter.editingWorkflow || {})
+    }
+  };
 };
 
 export const DataProvider = ({ children }) => {
   const [data, setData] = useState(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        return {
-          ...defaultData,
-          ...parsed,
-          resources: { ...defaultData.resources, ...(parsed.resources || {}) },
-          rules: parsed.rules || [],
-          novels: (parsed.novels || []).map((novel) => ({
-            ...novel,
-            cover: novel.cover ?? '',
-            outlinePrompt: novel.outlinePrompt || '',
-            outlineText: novel.outlineText || '',
-            outlineGeneratedAt: novel.outlineGeneratedAt || null,
-            outlineUpdatedAt: novel.outlineUpdatedAt || null,
-            outlineStatus: novel.outlineStatus || '',
-            outlineVersions: novel.outlineVersions || [],
-            outlineSelectionHistory: novel.outlineSelectionHistory || [],
-            relationshipGraph: novel.relationshipGraph || { nodes: [], relations: [] },
-            worldviewText: novel.worldviewText || '',
-            foreshadows: novel.foreshadows || [],
-            detailOutlineChapters: novel.detailOutlineChapters || [],
-            detailOutlineUpdatedAt: novel.detailOutlineUpdatedAt || null,
-            chapters: (novel.chapters || []).map((chapter) => ({
-              id: chapter.id,
-              title: chapter.title,
-              status: chapter.status || '未录入',
-              content: chapter.content || '',
-              storyboards: chapter.storyboards || [],
-              storyboardUpdatedAt: chapter.storyboardUpdatedAt || null,
-              summaryText: chapter.summaryText || '',
-              summaryTasks: chapter.summaryTasks || [],
-              summaryTasksComplete: chapter.summaryTasksComplete || false,
-              summaryUpdatedAt: chapter.summaryUpdatedAt || null,
-              recapText: chapter.recapText || '',
-              recapSourceChapterId: chapter.recapSourceChapterId || '',
-              finalPackageDownloadedAt: chapter.finalPackageDownloadedAt || null,
-              detailOutlineId: chapter.detailOutlineId || ''
-            }))
-          }))
-        };
-      } catch (e) {
-        console.error('Failed to parse stored data', e);
-      }
+    if (!stored) return defaultData;
+    try {
+      const parsed = JSON.parse(stored);
+      return {
+        ...defaultData,
+        ...parsed,
+        resources: { ...defaultResources, ...(parsed.resources || {}) },
+        rules: parsed.rules || [],
+        novels: (parsed.novels || []).map((novel) => ({
+          ...novel,
+          cover: novel.cover ?? '',
+          outlinePrompt: novel.outlinePrompt || '',
+          outlineText: novel.outlineText || '',
+          outlineGeneratedAt: novel.outlineGeneratedAt || null,
+          outlineUpdatedAt: novel.outlineUpdatedAt || null,
+          outlineStatus: novel.outlineStatus || '',
+          outlineVersions: novel.outlineVersions || [],
+          outlineSelectionHistory: novel.outlineSelectionHistory || [],
+          relationshipGraph: novel.relationshipGraph || { nodes: [], relations: [] },
+          worldviewText: novel.worldviewText || '',
+          foreshadows: novel.foreshadows || [],
+          detailOutlineChapters: novel.detailOutlineChapters || [],
+          detailOutlineUpdatedAt: novel.detailOutlineUpdatedAt || null,
+          chapters: (novel.chapters || []).map(normalizeChapter)
+        }))
+      };
+    } catch (error) {
+      console.error('Failed to parse stored data', error);
+      return defaultData;
     }
-    return defaultData;
   });
 
   const hasIdbRef = (value) => typeof value === 'string' && value.startsWith('idb:');
   const isDataUrl = (value) => typeof value === 'string' && value.startsWith('data:');
 
   const replaceImagesWithRefs = async (value) => {
-    if (Array.isArray(value)) {
-      return Promise.all(value.map((entry) => replaceImagesWithRefs(entry)));
-    }
+    if (Array.isArray(value)) return Promise.all(value.map((entry) => replaceImagesWithRefs(entry)));
     if (value && typeof value === 'object') {
       const entries = await Promise.all(
         Object.entries(value).map(async ([key, entry]) => [key, await replaceImagesWithRefs(entry)])
       );
       return Object.fromEntries(entries);
     }
-    if (isDataUrl(value)) {
-      const ref = await storeImageData(value);
-      return ref;
-    }
+    if (isDataUrl(value)) return storeImageData(value);
     return value;
   };
 
   const hydrateImagesFromRefs = async (value) => {
-    if (Array.isArray(value)) {
-      return Promise.all(value.map((entry) => hydrateImagesFromRefs(entry)));
-    }
+    if (Array.isArray(value)) return Promise.all(value.map((entry) => hydrateImagesFromRefs(entry)));
     if (value && typeof value === 'object') {
       const entries = await Promise.all(
         Object.entries(value).map(async ([key, entry]) => [key, await hydrateImagesFromRefs(entry)])
@@ -101,9 +178,8 @@ export const DataProvider = ({ children }) => {
       return Object.fromEntries(entries);
     }
     if (hasIdbRef(value)) {
-      const imageId = value.replace('idb:', '');
-      const stored = await getImageById(imageId);
-      return stored || value;
+      const storedImage = await getImageById(value.replace('idb:', ''));
+      return storedImage || value;
     }
     return value;
   };
@@ -111,13 +187,9 @@ export const DataProvider = ({ children }) => {
   useEffect(() => {
     let cancelled = false;
     const persist = async () => {
-      const dataForStorage = await replaceImagesWithRefs(data);
+      const payload = await replaceImagesWithRefs(data);
       if (cancelled) return;
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(dataForStorage));
-      } catch (error) {
-        console.warn('Failed to persist data to localStorage', error);
-      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     };
     persist();
     return () => {
@@ -131,9 +203,7 @@ export const DataProvider = ({ children }) => {
       const containsRefs = JSON.stringify(data).includes('"idb:');
       if (!containsRefs) return;
       const hydrated = await hydrateImagesFromRefs(data);
-      if (!cancelled) {
-        setData(hydrated);
-      }
+      if (!cancelled) setData(hydrated);
     };
     hydrate();
     return () => {
@@ -166,7 +236,7 @@ export const DataProvider = ({ children }) => {
   };
 
   const deleteNovel = (id) => {
-    setData((prev) => ({ ...prev, novels: prev.novels.filter((n) => n.id !== id) }));
+    setData((prev) => ({ ...prev, novels: prev.novels.filter((novel) => novel.id !== id) }));
   };
 
   const updateNovel = (novelId, updates) => {
@@ -177,34 +247,14 @@ export const DataProvider = ({ children }) => {
   };
 
   const addChapter = (novelId, title, content) => {
-    const newChapter = {
-      id: uuidv4(),
-      title,
-      status: '未录入',
-      content: content || '',
-      storyboards: [],
-      storyboardUpdatedAt: null,
-      summaryText: '',
-      summaryTasks: [],
-      summaryTasksComplete: false,
-      summaryUpdatedAt: null,
-      recapText: '',
-      recapSourceChapterId: '',
-      finalPackageDownloadedAt: null,
-      detailOutlineId: ''
-    };
+    const chapter = createDefaultChapter({ title, content });
     setData((prev) => ({
       ...prev,
       novels: prev.novels.map((novel) =>
-        novel.id === novelId
-          ? {
-              ...novel,
-              chapters: [...novel.chapters, newChapter]
-            }
-          : novel
+        novel.id === novelId ? { ...novel, chapters: [...novel.chapters, chapter] } : novel
       )
     }));
-    return newChapter.id;
+    return chapter.id;
   };
 
   const updateChapter = (novelId, chapterId, updates) => {
@@ -214,9 +264,11 @@ export const DataProvider = ({ children }) => {
         novel.id === novelId
           ? {
               ...novel,
-              chapters: novel.chapters.map((chapter) =>
-                chapter.id === chapterId ? { ...chapter, ...updates } : chapter
-              )
+              chapters: novel.chapters.map((chapter) => {
+                if (chapter.id !== chapterId) return chapter;
+                const resolvedUpdates = typeof updates === 'function' ? updates(chapter) : updates;
+                return normalizeChapter({ ...chapter, ...(resolvedUpdates || {}) });
+              })
             }
           : novel
       )
@@ -225,109 +277,12 @@ export const DataProvider = ({ children }) => {
 
   const upsertResource = (type, resource) => {
     setData((prev) => {
-      const collection = prev.resources[type] || [];
-      const existing = collection.find((r) => r.id === resource.id || r.name === resource.name);
-      const updatedList = existing
-        ? collection.map((r) => (r.id === existing.id ? { ...existing, ...resource } : r))
-        : [...collection, { ...resource, id: resource.id || uuidv4() }];
-      return { ...prev, resources: { ...prev.resources, [type]: updatedList } };
-    });
-  };
-
-  const upsertRule = (rule) => {
-    setData((prev) => {
-      const rules = prev.rules || [];
-      const existing = rules.find((r) => r.id === rule.id || r.tool === rule.tool);
-      const updatedRules = existing
-        ? rules.map((r) => {
-            if (r.id !== existing.id) return r;
-            const nextVersion = (r.version || 1) + 1;
-            const history = [...(r.history || []), { version: r.version || 1, snapshot: { ...r } }];
-            return { ...r, ...rule, id: r.id, version: nextVersion, history };
-          })
-        : [...rules, { ...rule, id: rule.id || uuidv4(), version: 1, history: [] }];
-      return { ...prev, rules: updatedRules };
-    });
-  };
-
-  const deleteRule = (ruleId) => {
-    setData((prev) => ({ ...prev, rules: prev.rules.filter((r) => r.id !== ruleId) }));
-  };
-
-  const importRules = (rules) => {
-    if (!Array.isArray(rules)) return;
-    setData((prev) => ({ ...prev, rules: rules.map((r) => ({ ...r, id: r.id || uuidv4() })) }));
-  };
-
-  const ensurePlaceholderResources = (missing, novelId = '') => {
-    missing.forEach((item) => {
-      const basePayload = {
-        name: item.name,
-        description: item.description || '占位资源，待补齐',
-        isAvailable: false,
-        status: '待补齐',
-        images: [],
-        ...(item.type === 'characters' && novelId ? { novelId } : {})
-      };
-      const typePayloads = {
-        characters: {
-          meta: {
-            persona: '待补齐：角色性格与人设推理',
-            appearance: '待补齐：外貌特征（发型/服饰/标识）',
-            reference: '待补齐：参考人物/原型',
-            relationships: '待补齐：人际关系推理',
-            expressionUnlock: '待补齐：表情解锁规则',
-            personalitySetting: '待补齐：性格设定',
-            growthTrajectory: '待补齐：成长轨迹',
-            characterGrowthHistory: []
-          },
-          aliases: [],
-          priorityPin: false,
-          form: [],
-          action: [],
-          assets: []
-        },
-        scenes: {
-          meta: {
-            sceneSettings: {
-              time: '',
-              weather: '',
-              season: '',
-              style: ''
-            },
-            sceneLayout: {
-              elements: []
-            },
-            sceneNotes: '待补齐：场景搭建元素、镜头参考、材质说明'
-          }
-        },
-        expressions: {
-          meta: {
-            emotionType: '',
-            emotionValue: '',
-            background: '',
-            templateSuggestion: '待补齐：填写参考动漫/角色/表情描述，用于图生图复刻',
-            expressionGrouping: 'group',
-            category: '自定义',
-            scope: 'universal',
-            riskLevel: 'mid',
-            strategy: '',
-            templateAnime: '',
-            templateCharacter: '',
-            templateExpression: '',
-            shotRecommendation: ['closeup', 'medium'],
-            prohibitions: '',
-            expressionAssets: [],
-            expressionRules: [],
-            expressionHistory: [],
-            expressionTransferRequests: []
-          }
-        }
-      };
-      upsertResource(item.type, {
-        ...basePayload,
-        ...(typePayloads[item.type] || {})
-      });
+      const current = prev.resources[type] || [];
+      const existing = current.find((item) => item.id === resource.id || item.name === resource.name);
+      const next = existing
+        ? current.map((item) => (item.id === existing.id ? { ...existing, ...resource } : item))
+        : [...current, { ...resource, id: resource.id || uuidv4() }];
+      return { ...prev, resources: { ...prev.resources, [type]: next } };
     });
   };
 
@@ -336,7 +291,7 @@ export const DataProvider = ({ children }) => {
       ...prev,
       resources: {
         ...prev.resources,
-        [type]: (prev.resources[type] || []).filter((r) => r.id !== resourceId)
+        [type]: (prev.resources[type] || []).filter((resource) => resource.id !== resourceId)
       }
     }));
   };
@@ -346,18 +301,60 @@ export const DataProvider = ({ children }) => {
       ...prev,
       resources: {
         ...prev.resources,
-        [type]: (prev.resources[type] || []).map((r) =>
-          r.id === resourceId
+        [type]: (prev.resources[type] || []).map((resource) =>
+          resource.id === resourceId
             ? {
-                ...r,
+                ...resource,
                 images,
                 isAvailable: images.length > 0,
                 status: images.length > 0 ? '已完成' : '待补齐'
               }
-            : r
+            : resource
         )
       }
     }));
+  };
+
+  const ensurePlaceholderResources = (missing, novelId = '') => {
+    missing.forEach((item) => {
+      upsertResource(item.type, {
+        name: item.name,
+        description: item.description || '占位资源，待补齐',
+        isAvailable: false,
+        status: '待补齐',
+        images: [],
+        ...(item.type === 'characters' && novelId ? { novelId } : {})
+      });
+    });
+  };
+
+  const upsertRule = (rule) => {
+    setData((prev) => {
+      const existing = (prev.rules || []).find((entry) => entry.id === rule.id || entry.tool === rule.tool);
+      const nextRules = existing
+        ? prev.rules.map((entry) =>
+            entry.id === existing.id
+              ? {
+                  ...entry,
+                  ...rule,
+                  id: existing.id,
+                  version: (entry.version || 1) + 1,
+                  history: [...(entry.history || []), { version: entry.version || 1, snapshot: { ...entry } }]
+                }
+              : entry
+          )
+        : [...(prev.rules || []), { ...rule, id: rule.id || uuidv4(), version: 1, history: [] }];
+      return { ...prev, rules: nextRules };
+    });
+  };
+
+  const deleteRule = (ruleId) => {
+    setData((prev) => ({ ...prev, rules: prev.rules.filter((rule) => rule.id !== ruleId) }));
+  };
+
+  const importRules = (rules) => {
+    if (!Array.isArray(rules)) return;
+    setData((prev) => ({ ...prev, rules: rules.map((rule) => ({ ...rule, id: rule.id || uuidv4() })) }));
   };
 
   const value = {
