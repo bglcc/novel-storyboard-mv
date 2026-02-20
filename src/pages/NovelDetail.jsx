@@ -199,7 +199,6 @@ const NovelDetail = () => {
   const [activeTab, setActiveTab] = useState('outline');
   const [outlineEditMode, setOutlineEditMode] = useState(false);
   const [outlineDraft, setOutlineDraft] = useState(novel?.outlineText || '');
-  const [outlineDraft, setOutlineDraft] = useState(novel?.outlineText || '');
   const [worldviewEditMode, setWorldviewEditMode] = useState(false);
   const [worldviewDraft, setWorldviewDraft] = useState(novel?.worldviewText || '');
   const [detailExpanded, setDetailExpanded] = useState({});
@@ -639,46 +638,6 @@ const NovelDetail = () => {
         const chapterIndex = (novel.chapters || []).findIndex((item) => item.id === chapter.id);
         if (chapterIndex >= 0 && chapterIndex < (novel.chapters || []).length - 1) {
           return (novel.chapters || [])[chapterIndex + 1];
-      if (!cleaned) {
-        alert('摘要内容为空');
-        return;
-      }
-      const parsed = parseLenientJson(cleaned);
-      const summaryText = parsed.summaryText || parsed.summary || parsed.text || '';
-      const incomingTasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
-      const detail = findDetailChapter(chapter);
-      const requiredTasks = detail?.tasks || [];
-      const mergedTasks = requiredTasks.map((task) => {
-        const match = incomingTasks.find((item) => {
-          if (item.id && item.id === task.id) return true;
-          if (task.type === '资源运用') {
-            return (
-              item.resourceName === task.resourceName &&
-              normalizeResourceType(item.resourceType || item.resourceCategory) === normalizeResourceType(task.resourceType)
-            );
-          }
-          return item.foreshadowNumber === task.foreshadowNumber;
-        });
-        const status = match?.status || (match?.completed ? '已完成' : task.status || '待完成');
-        return { ...task, status };
-      });
-      const tasksComplete = mergedTasks.length
-        ? mergedTasks.every((task) => task.status === '已完成')
-        : Boolean(parsed.tasksComplete || parsed.completed || false);
-      const resolveNextChapter = () => {
-        if (!detailOutlineChapters.length) return null;
-        const currentDetailIndex = detailOutlineChapters.findIndex(
-          (entry) => entry.id === detail?.id || entry.title === chapter.title
-        );
-        if (currentDetailIndex >= 0 && currentDetailIndex < detailOutlineChapters.length - 1) {
-          const nextDetail = detailOutlineChapters[currentDetailIndex + 1];
-          return (novel.chapters || []).find(
-            (item) => item.detailOutlineId === nextDetail.id || item.title === nextDetail.title
-          );
-        }
-        const chapterIndex = (novel.chapters || []).findIndex((item) => item.id === chapter.id);
-        if (chapterIndex >= 0 && chapterIndex < (novel.chapters || []).length - 1) {
-          return (novel.chapters || [])[chapterIndex + 1];
         }
         return null;
       };
@@ -713,6 +672,7 @@ const NovelDetail = () => {
       event.target.value = '';
     }
   };
+
 
   const handleForeshadowUpdate = (id, updates) => {
     const next = (novel.foreshadows || []).map((item) => (item.id === id ? { ...item, ...updates } : item));
