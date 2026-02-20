@@ -194,10 +194,11 @@ const mapResourceTypeToKey = (value) => {
 const NovelDetail = () => {
   const { novelId } = useParams();
   const navigate = useNavigate();
-  const { data, updateChapter, updateNovel, upsertRule, ensurePlaceholderResources } = useData();
+  const { data, updateChapter, updateNovel, ensurePlaceholderResources } = useData();
   const novel = data.novels.find((n) => n.id === novelId);
   const [activeTab, setActiveTab] = useState('outline');
   const [outlineEditMode, setOutlineEditMode] = useState(false);
+  const [outlineDraft, setOutlineDraft] = useState(novel?.outlineText || '');
   const [outlineDraft, setOutlineDraft] = useState(novel?.outlineText || '');
   const [worldviewEditMode, setWorldviewEditMode] = useState(false);
   const [worldviewDraft, setWorldviewDraft] = useState(novel?.worldviewText || '');
@@ -219,72 +220,13 @@ const NovelDetail = () => {
     setActiveTab(nextTab);
   }, [novelId]);
 
-  useEffect(() => {
-    const defaultRules = [
-      {
-        tool: '细纲规则库',
-        description: '细纲生成与任务清单的规则说明。',
-        parameters: {
-          overview: '用于生成章节细纲、伏笔埋设与资源运用任务清单的规则说明。',
-          tasks: ['生成章节细纲', '输出伏笔埋设/回收任务清单', '输出资源运用清单', '维护章节任务进度'],
-          exportSpec: {
-            chapters: '章节细纲与任务清单（含资源运用）',
-            foreshadows: '伏笔条目（编号/类型/状态/规则）',
-            resourceIndex: '简易资源名称清单（仅名称）'
-          },
-          importSpec: {
-            outline: '小说大纲（文本）',
-            foreshadows: '伏笔资源库',
-            chapters: '细纲章节列表',
-            resourceIndex: '资源名称清单（角色/场景/道具/表情）'
-          }
-        }
-      },
-      {
-        tool: '伏笔规则库',
-        description: '伏笔管理与回收规则的规范说明。',
-        parameters: {
-          overview: '用于维护伏笔类型、状态、埋设/回收规则的规则说明。',
-          tasks: ['新增伏笔条目', '维护伏笔埋设与回收规则', '追踪伏笔状态'],
-          exportSpec: {
-            foreshadows: '伏笔列表（编号/类型/状态/规则）'
-          },
-          importSpec: {
-            foreshadows: '伏笔列表（编号/描述/类型/状态/规则）'
-          }
-        }
-      },
-      {
-        tool: '摘要规则库',
-        description: '结果摘要的输出与校验规范。',
-        parameters: {
-          overview: '用于生成章节结果摘要并校验细纲任务完成情况。',
-          tasks: ['输出章节结果摘要', '回传任务完成状态', '校验伏笔埋设/回收进度'],
-          exportSpec: {
-            summaryText: '章节结果摘要文本',
-            tasks: '任务完成状态（与细纲任务对应）'
-          },
-          importSpec: {
-            detailOutline: '细纲任务清单',
-            summary: '章节结果摘要内容'
-          }
-        }
-      }
-    ];
-    defaultRules.forEach((rule) => {
-      const exists = (data.rules || []).some((entry) => entry.tool === rule.tool);
-      if (!exists) {
-        upsertRule(rule);
-      }
-    });
-  }, [data.rules, upsertRule]);
 
   if (!novel) return <div className="card">未找到小说。</div>;
 
   const computeChapterStatus = (chapter) => {
     if (!chapter) return '未录入';
     if (chapter.finalPackageDownloadedAt) return '已完成';
-    if ((chapter.storyboards || []).length > 0) return '待完成';
+    if ((chapter.storyboardShots || []).length > 0) return '待完成';
     if ((chapter.content || '').trim()) return '已录入';
     return '未录入';
   };
@@ -657,6 +599,46 @@ const NovelDetail = () => {
       setSummaryUploadingChapterId(chapter.id);
       const text = await file.text();
       const cleaned = text.replace(/^\uFEFF/, '').trim();
+      if (!cleaned) {
+        alert('摘要内容为空');
+        return;
+      }
+      const parsed = parseLenientJson(cleaned);
+      const summaryText = parsed.summaryText || parsed.summary || parsed.text || '';
+      const incomingTasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
+      const detail = findDetailChapter(chapter);
+      const requiredTasks = detail?.tasks || [];
+      const mergedTasks = requiredTasks.map((task) => {
+        const match = incomingTasks.find((item) => {
+          if (item.id && item.id === task.id) return true;
+          if (task.type === '资源运用') {
+            return (
+              item.resourceName === task.resourceName &&
+              normalizeResourceType(item.resourceType || item.resourceCategory) === normalizeResourceType(task.resourceType)
+            );
+          }
+          return item.foreshadowNumber === task.foreshadowNumber;
+        });
+        const status = match?.status || (match?.completed ? '已完成' : task.status || '待完成');
+        return { ...task, status };
+      });
+      const tasksComplete = mergedTasks.length
+        ? mergedTasks.every((task) => task.status === '已完成')
+        : Boolean(parsed.tasksComplete || parsed.completed || false);
+      const resolveNextChapter = () => {
+        if (!detailOutlineChapters.length) return null;
+        const currentDetailIndex = detailOutlineChapters.findIndex(
+          (entry) => entry.id === detail?.id || entry.title === chapter.title
+        );
+        if (currentDetailIndex >= 0 && currentDetailIndex < detailOutlineChapters.length - 1) {
+          const nextDetail = detailOutlineChapters[currentDetailIndex + 1];
+          return (novel.chapters || []).find(
+            (item) => item.detailOutlineId === nextDetail.id || item.title === nextDetail.title
+          );
+        }
+        const chapterIndex = (novel.chapters || []).findIndex((item) => item.id === chapter.id);
+        if (chapterIndex >= 0 && chapterIndex < (novel.chapters || []).length - 1) {
+          return (novel.chapters || [])[chapterIndex + 1];
       if (!cleaned) {
         alert('摘要内容为空');
         return;

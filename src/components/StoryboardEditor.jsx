@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useData } from '../context/DataContext';
 import { saveFileWithFallback, sha256, validateFile } from '../utils/localFileBridge';
 
@@ -105,6 +105,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const [activeShotId, setActiveShotId] = useState(chapter.storyboardShots?.[0]?.id || '');
   const [activeFrameId, setActiveFrameId] = useState('main');
   const [zoomPreview, setZoomPreview] = useState(null);
+  const replaceInputRef = useRef(null);
   const [expandedFolders, setExpandedFolders] = useState({
     missing: true,
     uploaded: true,
@@ -159,7 +160,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   };
 
   const buildTargetPath = (resourceType = 'misc', subType = '') => {
-    const chapterName = chapter.title || `chapter-${chapter.id}`;
+    const chapterName = `${chapter.id}-${chapter.title || 'untitled'}`;
     const safeType = resourceType || 'misc';
     const safeSubType = subType || 'default';
     return `${novelId}/${chapterName}/${safeType}/${safeSubType}`;
@@ -195,14 +196,45 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     updateChapterPatch({ storyboardOutlineItems: next, storyboardOutlineUpdatedAt: Date.now() });
   };
 
-  const uploadOutlineDetail = (id, file) => {
+  const uploadOutlineDetail = async (id, file) => {
     if (!file) return;
-    updateOutline(id, { detailUploaded: true, detailFileName: file.name, detailUploadedAt: Date.now() });
+    const detailContent = await file.text();
+    updateOutline(id, {
+      detailUploaded: true,
+      detailFileName: file.name,
+      detailContent,
+      detailUploadedAt: Date.now()
+    });
   };
 
   const canDownloadDetail = (index) => {
     if (index === 0) return true;
     return Boolean(outlineItems[index - 1]?.detailUploaded);
+  };
+
+  const downloadOutlineDetail = (index) => {
+    const current = outlineItems[index];
+    if (!current) return;
+    const previous = index > 0 ? outlineItems[index - 1] : null;
+    const payload = {
+      outlineOrder: current.order,
+      outlineText: current.text,
+      previousOutlineContext: previous
+        ? {
+            order: previous.order,
+            text: previous.text,
+            detailContent: previous.detailContent || '',
+            detailUploadedAt: previous.detailUploadedAt || null
+          }
+        : null
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `outline-${current.order}-detail-task.json`;
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const addShot = () => {
@@ -347,6 +379,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       chapterId: chapter.id,
       chapterTitle: chapter.title,
       generatedAt: new Date().toISOString(),
+      chapterSummary: chapter.editingWorkflow?.chapterSummary || '',
       shots: shots.map((shot) => ({
         shotNumber: shot.shotNumber,
         level: shot.level,
@@ -364,7 +397,12 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           imageAsset: shot.imageAsset,
           videoAsset: shot.videoAsset
         },
-        keyframes: shot.keyframes || []
+        keyframes: shot.keyframes || [],
+        audioPlaceholders: {
+          dialogue: shot.dialoguePlaceholder || '',
+          bgm: shot.bgmPlaceholder || '',
+          sfx: shot.sfxPlaceholder || ''
+        }
       }))
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -374,6 +412,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     link.download = `${chapter.title}-to-jianying.json`;
     link.click();
     URL.revokeObjectURL(url);
+    updateChapterPatch({ finalPackageDownloadedAt: Date.now() });
   };
 
   const updateClipScript = (value) => {
@@ -384,6 +423,37 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         clipScriptUpdatedAt: Date.now()
       }
     }));
+  };
+
+  const updateChapterSummary = (value) => {
+    updateChapterPatch((currentChapter) => ({
+      editingWorkflow: {
+        ...(currentChapter.editingWorkflow || {}),
+        chapterSummary: value,
+        chapterSummaryUpdatedAt: Date.now()
+      }
+    }));
+  };
+
+  const triggerPreviewDownload = (src, fileName) => {
+    if (!src) return;
+    const link = document.createElement('a');
+    link.href = src;
+    link.download = fileName || 'resource';
+    link.click();
+  };
+
+  const openZoomPreview = (config) => setZoomPreview(config);
+
+  const applyZoomReplacement = (file) => {
+    if (!file || !zoomPreview) return;
+    if (zoomPreview.type === 'resource') {
+      uploadResourceFile(zoomPreview.resourceId, file);
+      return;
+    }
+    if (zoomPreview.type === 'asset') {
+      uploadFrameAsset(zoomPreview.field, file);
+    }
   };
 
   const missingResources = (activeFrame?.resources || []).filter((item) => item.status !== 'uploaded');
@@ -418,7 +488,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                   onChange={(event) => updateOutline(item.id, { text: event.target.value })}
                 />
                 <div className="row">
-                  <button type="button" disabled={!canDownloadDetail(index)}>下载分镜头细纲</button>
+                  <button type="button" disabled={!canDownloadDetail(index)} onClick={() => downloadOutlineDetail(index)}>下载分镜头细纲</button>
                   <label className="file-button">
                     上传分镜头细纲
                     <input
@@ -642,8 +712,15 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                       <div className="resource-item-head">
                         <strong>{getResourceTypeLabel(resource.type)} · {resource.name}</strong>
                         <div className="row">
-                          <button type="button" onClick={() => setZoomPreview(resource.preview || null)}>查看</button>
-                          <button type="button">下载</button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openZoomPreview({ type: 'resource', src: resource.preview || '', resourceId: resource.id })
+                            }
+                          >
+                            查看
+                          </button>
+                          <button type="button" onClick={() => triggerPreviewDownload(resource.preview, resource.fileName)}>下载</button>
                           <label className="file-button compact">
                             替换
                             <input type="file" accept="image/*,video/mp4" onChange={(event) => uploadResourceFile(resource.id, event.target.files?.[0])} />
@@ -655,7 +732,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                           src={resource.preview}
                           alt={resource.name || 'resource'}
                           className="resource-thumb"
-                          onClick={() => setZoomPreview(resource.preview)}
+                          onClick={() => openZoomPreview({ type: 'resource', src: resource.preview, resourceId: resource.id })}
                         />
                       )}
                     </div>
@@ -684,7 +761,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                         src={activeFrame.imageAsset.preview}
                         alt="imageAsset"
                         className="resource-thumb"
-                        onClick={() => setZoomPreview(activeFrame.imageAsset.preview)}
+                        onClick={() => openZoomPreview({ type: 'asset', src: activeFrame.imageAsset.preview, field: 'imageAsset' })}
                       />
                     )}
                   </div>
@@ -722,6 +799,15 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                     下载至剪映
                   </button>
                   <label>
+                    章节级汇总文本
+                    <textarea
+                      className="large-input"
+                      value={chapter.editingWorkflow?.chapterSummary || ''}
+                      onChange={(event) => updateChapterSummary(event.target.value)}
+                      placeholder="填写本章节交付汇"
+                    />
+                  </label>
+                  <label>
                     剪映代码（纯文本）
                     <textarea
                       className="large-input"
@@ -737,10 +823,19 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         )}
       </aside>
 
-      {zoomPreview && (
+      {zoomPreview?.src && (
         <div className="modal" onClick={() => setZoomPreview(null)}>
           <div className="modal-content preview-modal" onClick={(event) => event.stopPropagation()}>
-            <img src={zoomPreview} alt="preview" className="preview-modal-image" />
+            <img src={zoomPreview.src} alt="preview" className="preview-modal-image" />
+            <label className="file-button" style={{ marginTop: 8 }}>
+              替换
+              <input
+                ref={replaceInputRef}
+                type="file"
+                accept="image/*,video/mp4"
+                onChange={(event) => applyZoomReplacement(event.target.files?.[0])}
+              />
+            </label>
             <div className="row" style={{ marginTop: 8 }}>
               <button type="button" onClick={() => setZoomPreview(null)}>关闭</button>
             </div>
