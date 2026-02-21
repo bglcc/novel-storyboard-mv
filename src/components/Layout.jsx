@@ -1,10 +1,13 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 
 const Layout = ({ children }) => {
+  const location = useLocation();
+  const isWidePage = /^\/novel\/[^/]+\/chapter\/[^/]+$/.test(location.pathname);
+
   return (
     <div className="app-shell">
-      <header className="app-header">
+      <header className="app-header app-header-fixed">
         <div className="brand">小说分镜头可视化创作系统</div>
         <nav>
           <Link to="/">首页</Link>
@@ -12,7 +15,7 @@ const Layout = ({ children }) => {
           <Link to="/rules">规则库</Link>
         </nav>
       </header>
-      <main className="app-main">{children}</main>
+      <main className={`app-main ${isWidePage ? 'app-main-wide' : ''}`}>{children}</main>
     </div>
   );
 };

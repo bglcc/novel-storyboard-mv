@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useData } from '../context/DataContext';
 import { saveFileWithFallback, sha256, validateFile } from '../utils/localFileBridge';
 
@@ -99,19 +99,29 @@ const readFilePreview = (file) =>
     reader.readAsDataURL(file);
   });
 
+const parseLenientJson = (text) => {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const wrapped = text.replace(/^[\uFEFF\s]+/, '').trim();
+    return JSON.parse(wrapped);
+  }
+};
+
 const StoryboardEditor = ({ novelId, chapter }) => {
   const { updateChapter } = useData();
   const [activeOutlineId, setActiveOutlineId] = useState(chapter.storyboardOutlineItems?.[0]?.id || '');
   const [activeShotId, setActiveShotId] = useState(chapter.storyboardShots?.[0]?.id || '');
   const [activeFrameId, setActiveFrameId] = useState('main');
   const [zoomPreview, setZoomPreview] = useState(null);
+  const [highlightIncompleteShotId, setHighlightIncompleteShotId] = useState('');
   const replaceInputRef = useRef(null);
+  const outlineUploadRef = useRef(null);
   const [expandedFolders, setExpandedFolders] = useState({
     missing: true,
-    uploaded: true,
+    uploaded: false,
     imageUpload: true,
-    videoUpload: true,
-    clipExport: true
+    videoUpload: true
   });
 
   const outlineItems = chapter.storyboardOutlineItems || [];
@@ -125,7 +135,26 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     return activeShot.keyframes?.find((frame) => frame.id === activeFrameId) || activeShot;
   }, [activeFrameId, activeShot]);
 
-  const toggleFolder = (key) => setExpandedFolders((prev) => ({ ...prev, [key]: !prev[key] }));
+  const groupedShots = useMemo(
+    () =>
+      outlineItems.map((outline, outlineIndex) => ({
+        outline,
+        outlineIndex,
+        shots: shots.filter((shot) => shot.outlineIndex === outlineIndex)
+      })),
+    [outlineItems, shots]
+  );
+
+  const toggleFolder = (key) =>
+    setExpandedFolders((prev) => {
+      if (key === 'missing') {
+        return { ...prev, missing: true, uploaded: false };
+      }
+      if (key === 'uploaded') {
+        return { ...prev, missing: false, uploaded: true };
+      }
+      return { ...prev, [key]: !prev[key] };
+    });
 
   const updateChapterPatch = (patchOrUpdater) => {
     updateChapter(novelId, chapter.id, (currentChapter) => {
@@ -189,6 +218,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const addOutline = () => {
     const next = [...outlineItems, makeOutlineItem(outlineItems.length)];
     updateChapterPatch({ storyboardOutlineItems: next, storyboardOutlineUpdatedAt: Date.now() });
+    setActiveOutlineId(next[next.length - 1]?.id || '');
   };
 
   const updateOutline = (id, patch) => {
@@ -205,6 +235,33 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       detailContent,
       detailUploadedAt: Date.now()
     });
+  };
+
+  const uploadAllOutlineItems = async (file) => {
+    if (!file) return;
+    try {
+      const raw = await file.text();
+      const parsed = parseLenientJson(raw);
+      const source = Array.isArray(parsed) ? parsed : parsed.outlineItems || parsed.storyboardOutlineItems || [];
+      if (!Array.isArray(source) || source.length === 0) {
+        alert('上传失败：未识别到分镜头大纲数组。');
+        return;
+      }
+      const next = source.map((item, index) => ({
+        id: item.id || crypto.randomUUID(),
+        order: index + 1,
+        text: item.text || item.outlineText || item.content || `分镜头大纲 ${index + 1}`,
+        detailUploaded: Boolean(item.detailUploaded || item.detailContent),
+        detailFileName: item.detailFileName || '',
+        detailContent: item.detailContent || '',
+        detailUploadedAt: item.detailUploadedAt || null
+      }));
+      updateChapterPatch({ storyboardOutlineItems: next, storyboardOutlineUpdatedAt: Date.now() });
+      setActiveOutlineId(next[0]?.id || '');
+      alert(`已上传 ${next.length} 条分镜头大纲。`);
+    } catch (error) {
+      alert('上传失败：JSON 解析错误。');
+    }
   };
 
   const canDownloadDetail = (index) => {
@@ -237,10 +294,11 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     URL.revokeObjectURL(url);
   };
 
-  const addShot = () => {
-    const shot = makeShot(shots.length, Math.max(0, outlineItems.findIndex((item) => item.id === activeOutlineId)));
+  const addShot = (outlineIndex = 0) => {
+    const shot = makeShot(shots.length, outlineIndex);
     const next = [...shots, shot];
     syncShotStatus(next);
+    setActiveOutlineId(outlineItems[outlineIndex]?.id || '');
     setActiveShotId(shot.id);
     setActiveFrameId('main');
   };
@@ -415,6 +473,20 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     updateChapterPatch({ finalPackageDownloadedAt: Date.now() });
   };
 
+  const handleClipExportClick = () => {
+    const firstIncomplete = shots.find((shot) => !shot.completed);
+    if (firstIncomplete) {
+      setActiveShotId(firstIncomplete.id);
+      setActiveFrameId('main');
+      const relatedOutline = outlineItems[firstIncomplete.outlineIndex];
+      if (relatedOutline) setActiveOutlineId(relatedOutline.id);
+      setHighlightIncompleteShotId((prev) => (prev === firstIncomplete.id ? '' : firstIncomplete.id));
+      return;
+    }
+    setHighlightIncompleteShotId('');
+    exportClipPackage();
+  };
+
   const updateClipScript = (value) => {
     updateChapterPatch((currentChapter) => ({
       editingWorkflow: {
@@ -460,74 +532,48 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const uploadedResources = (activeFrame?.resources || []).filter((item) => item.status === 'uploaded');
   const needsImageUpload = activeShot && ['L1', 'L3'].includes(activeShot.level);
   const needsVideoUpload = activeShot && activeShot.level === 'L3';
+  const resourceStoragePath = buildTargetPath('characters', 'default');
+  const frameAssetStoragePath = buildTargetPath('shot-assets', activeShot?.level || 'L1');
+
+  const [leftPanelWidth, setLeftPanelWidth] = useState(320);
+  const [rightPanelWidth, setRightPanelWidth] = useState(360);
+  const [dragTarget, setDragTarget] = useState('');
+
+  useEffect(() => {
+    if (!dragTarget) return undefined;
+    const handleMove = (event) => {
+      const viewport = window.innerWidth;
+      if (dragTarget === 'left') {
+        const next = Math.min(Math.max(event.clientX - 20, 260), 520);
+        setLeftPanelWidth(next);
+      }
+      if (dragTarget === 'right') {
+        const next = Math.min(Math.max(viewport - event.clientX - 20, 300), 520);
+        setRightPanelWidth(next);
+      }
+    };
+    const stopDrag = () => setDragTarget('');
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', stopDrag);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', stopDrag);
+    };
+  }, [dragTarget]);
 
   return (
-    <div className="card storyboard-workspace">
-      <div className="storyboard-main-panel">
-        <div className="storyboard-main-scroll">
-          <div className="section-header">
-            <h3>分镜头大纲</h3>
-            <button type="button" onClick={addOutline}>新增大纲</button>
-          </div>
-          <div className="stack">
-            {outlineItems.map((item, index) => (
-              <div
-                key={item.id}
-                className={`outline-row ${activeOutlineId === item.id ? 'active' : ''}`}
-                onMouseEnter={() => setActiveOutlineId(item.id)}
-              >
-                <div className="outline-row-top">
-                  <strong>#{item.order}</strong>
-                  <span className={`status-pill ${item.detailUploaded ? 'green' : 'orange'}`}>
-                    {item.detailUploaded ? '细纲已上传' : '待上传细纲'}
-                  </span>
-                </div>
-                <textarea
-                  className="large-input"
-                  value={item.text}
-                  onChange={(event) => updateOutline(item.id, { text: event.target.value })}
-                />
-                <div className="row">
-                  <button type="button" disabled={!canDownloadDetail(index)} onClick={() => downloadOutlineDetail(index)}>下载分镜头细纲</button>
-                  <label className="file-button">
-                    上传分镜头细纲
-                    <input
-                      type="file"
-                      accept="application/json,text/plain"
-                      onChange={(event) => uploadOutlineDetail(item.id, event.target.files?.[0])}
-                    />
-                  </label>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="section-header" style={{ marginTop: 16 }}>
-            <h3>二级分镜头</h3>
-            <button type="button" onClick={addShot}>新增镜头</button>
-          </div>
-          <div className="stack">
-            {shots.map((shot) => (
-              <button
-                key={shot.id}
-                type="button"
-                className={`shot-row ${activeShotId === shot.id ? 'active' : ''}`}
-                onClick={() => {
-                  setActiveShotId(shot.id);
-                  setActiveFrameId('main');
-                }}
-              >
-                <span>{shot.shotNumber}</span>
-                <span>{shot.synopsis || shot.title || '未命名镜头'}</span>
-                <span>{shot.level}</span>
-                <span>{shot.completed ? '完成' : '制作中'}</span>
-              </button>
-            ))}
-            {shots.length === 0 && <div className="empty">请先创建镜头。</div>}
-          </div>
-
+    <div
+      className={`storyboard-workspace ${dragTarget ? 'resizing' : ''}`}
+      style={{ '--left-panel-width': `${leftPanelWidth}px`, '--right-panel-width': `${rightPanelWidth}px` }}
+    >
+      <section className="storyboard-editor-panel">
+        <div className="storyboard-editor-header">
+          <h3>镜头编辑</h3>
+        </div>
+        <div className="storyboard-editor-scroll">
+          {!activeShot && <div className="empty">请选择中部镜头后进行编辑。</div>}
           {activeShot && (
-            <div className="card subtle" style={{ marginTop: 16 }}>
+            <div className="card subtle shot-editor-card fixed-card">
               <div className="section-header compact">
                 <h3>镜头编辑</h3>
                 <div className="row">
@@ -554,7 +600,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
               </div>
 
               {activeShot.keyframesEnabled && (
-                <div className="row wrap" style={{ marginBottom: 10 }}>
+                <div className="row wrap" style={{ marginBottom: 8 }}>
                   <button
                     type="button"
                     className={`tab ${activeFrameId === 'main' ? 'active' : ''}`}
@@ -577,7 +623,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
               )}
 
               {activeFrame && (
-                <div className="storyboard-form-grid">
+                <div className="storyboard-form-grid compact-grid">
                   <label>
                     标题
                     <input
@@ -609,7 +655,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                   <label className="span-2">
                     分镜描述
                     <textarea
-                      className="large-input"
+                      className="large-input compact-input"
                       value={activeShot.synopsis || ''}
                       onChange={(event) => updateShot(activeShot.id, { synopsis: event.target.value })}
                     />
@@ -617,7 +663,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                   <label className="span-2">
                     场景描述
                     <textarea
-                      className="large-input"
+                      className="large-input compact-input"
                       value={activeFrame.sceneDescription || ''}
                       onChange={(event) => updateActiveFrame({ sceneDescription: event.target.value })}
                     />
@@ -625,7 +671,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                   <label className="span-2">
                     画面描述
                     <textarea
-                      className="large-input"
+                      className="large-input compact-input"
                       value={activeFrame.visualDescription || ''}
                       onChange={(event) => updateActiveFrame({ visualDescription: event.target.value })}
                     />
@@ -633,7 +679,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                   <label className="span-2">
                     剪辑方法
                     <textarea
-                      className="large-input"
+                      className="large-input compact-input"
                       value={activeFrame.editMethod || ''}
                       onChange={(event) => updateActiveFrame({ editMethod: event.target.value })}
                     />
@@ -643,11 +689,121 @@ const StoryboardEditor = ({ novelId, chapter }) => {
             </div>
           )}
         </div>
-      </div>
+      </section>
+
+      <div
+        className="panel-resizer"
+        onMouseDown={() => setDragTarget('left')}
+        role="separator"
+        aria-label="调整左侧面板宽度"
+      />
+
+      <section className="storyboard-main-panel">
+        <div className="storyboard-main-header sticky">
+          <h3>分镜头工作区</h3>
+          <div className="row">
+            <button type="button" className="button-secondary" onClick={() => outlineUploadRef.current?.click()}>
+              上传分镜头大纲
+            </button>
+            <input
+              ref={outlineUploadRef}
+              type="file"
+              accept="application/json,text/plain"
+              style={{ display: 'none' }}
+              onChange={(event) => uploadAllOutlineItems(event.target.files?.[0])}
+            />
+            <button
+              type="button"
+              className={`clip-export-top-button ${chapter.editingWorkflow?.clipExportReady ? 'ready' : 'pending'}`}
+              onClick={handleClipExportClick}
+            >
+              下载至剪映
+            </button>
+          </div>
+        </div>
+
+        <div className="storyboard-main-scroll">
+          <div className="section-header">
+            <h3>分镜头大纲</h3>
+            <button type="button" onClick={addOutline}>新增大纲</button>
+          </div>
+
+          <div className="outline-list">
+            {groupedShots.map(({ outline, outlineIndex, shots: outlineShots }) => (
+              <div
+                key={outline.id}
+                className={`outline-row ${activeOutlineId === outline.id ? 'active' : ''}`}
+                onMouseEnter={() => setActiveOutlineId(outline.id)}
+              >
+                <div className="outline-row-top">
+                  <strong>#{outline.order}</strong>
+                  <div className="row">
+                    <span className={`status-pill ${outline.detailUploaded ? 'green' : 'orange'}`}>
+                      {outline.detailUploaded ? '细纲已上传' : '待上传细纲'}
+                    </span>
+                    <button type="button" className="tab" onClick={() => addShot(outlineIndex)}>新增镜头</button>
+                  </div>
+                </div>
+                <input
+                  className="outline-inline-input"
+                  value={outline.text}
+                  onChange={(event) => updateOutline(outline.id, { text: event.target.value })}
+                  placeholder="输入大纲内容（建议 1-2 句）"
+                />
+                <div className="row">
+                  <button type="button" disabled={!canDownloadDetail(outlineIndex)} onClick={() => downloadOutlineDetail(outlineIndex)}>
+                    下载分镜头细纲
+                  </button>
+                  <label className="file-button">
+                    上传分镜头细纲
+                    <input
+                      type="file"
+                      accept="application/json,text/plain"
+                      onChange={(event) => uploadOutlineDetail(outline.id, event.target.files?.[0])}
+                    />
+                  </label>
+                </div>
+
+                <div className="outline-shot-list">
+                  {outlineShots.map((shot) => (
+                    <button
+                      key={shot.id}
+                      type="button"
+                      className={`shot-row ${activeShotId === shot.id ? 'active' : ''} ${highlightIncompleteShotId === shot.id ? 'highlight-danger' : ''}`}
+                      onClick={() => {
+                        setActiveShotId(shot.id);
+                        setActiveFrameId('main');
+                        setHighlightIncompleteShotId('');
+                      }}
+                    >
+                      <span>#{shot.shotNumber}</span>
+                      <span>{shot.synopsis || shot.title || '未命名镜头'}</span>
+                      <span>{shot.level}</span>
+                      <span>{shot.completed ? '完成' : '制作中'}</span>
+                    </button>
+                  ))}
+                  {outlineShots.length === 0 && <div className="empty">当前大纲暂无二级分镜头。</div>}
+                </div>
+              </div>
+            ))}
+            {outlineItems.length === 0 && <div className="empty">暂无分镜头大纲，请先上传或新增。</div>}
+          </div>
+        </div>
+      </section>
+
+      <div
+        className="panel-resizer"
+        onMouseDown={() => setDragTarget('right')}
+        role="separator"
+        aria-label="调整右侧面板宽度"
+      />
 
       <aside className="storyboard-side-panel">
         <div className="storyboard-side-header">
-          <h3>资源面板（固定）</h3>
+          <div>
+            <h3>资源面板</h3>
+            <div className="storage-path-hint">资源默认保存：{resourceStoragePath}</div>
+          </div>
           <button type="button" onClick={addResource} disabled={!activeFrame}>+ 资源</button>
         </div>
 
@@ -657,7 +813,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           <div className="storyboard-side-scroll">
             <div className="folder-card">
               <button type="button" className={`folder-title ${expandedFolders.missing ? 'active' : ''}`} onClick={() => toggleFolder('missing')}>
-                缺失资源（红）
+                <span className="folder-title-badge danger">缺失资源</span>
               </button>
               {expandedFolders.missing && (
                 <div className="folder-body">
@@ -688,12 +844,13 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                       </label>
                       <label>
                         提示词
-                        <textarea className="large-input" value={resource.prompt} onChange={(event) => updateResource(resource.id, { prompt: event.target.value })} />
+                        <textarea className="large-input compact-input" value={resource.prompt} onChange={(event) => updateResource(resource.id, { prompt: event.target.value })} />
                       </label>
                       <label className="placeholder-upload">
                         上传资源
                         <input type="file" accept="image/*,video/mp4" onChange={(event) => uploadResourceFile(resource.id, event.target.files?.[0])} />
                       </label>
+                      <div className="storage-path-hint">目标目录：{buildTargetPath(resource.type, resource.subType)}</div>
                     </div>
                   ))}
                   {missingResources.length === 0 && <div className="empty">无缺失资源。</div>}
@@ -703,7 +860,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
 
             <div className="folder-card">
               <button type="button" className={`folder-title ${expandedFolders.uploaded ? 'active' : ''}`} onClick={() => toggleFolder('uploaded')}>
-                已上传资源（绿）
+                <span className="folder-title-badge success">已上传资源</span>
               </button>
               {expandedFolders.uploaded && (
                 <div className="folder-body">
@@ -735,6 +892,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                           onClick={() => openZoomPreview({ type: 'resource', src: resource.preview, resourceId: resource.id })}
                         />
                       )}
+                      <div className="storage-path-hint">本地路径：{resource.localPath || '未上传'}</div>
                     </div>
                   ))}
                   {uploadedResources.length === 0 && <div className="empty">暂无已上传资源。</div>}
@@ -756,6 +914,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                         <input type="file" accept="image/*" onChange={(event) => uploadFrameAsset('imageAsset', event.target.files?.[0])} />
                       </label>
                     </div>
+                    <div className="storage-path-hint">图片保存目录：{frameAssetStoragePath}</div>
                     {activeFrame.imageAsset?.preview && (
                       <img
                         src={activeFrame.imageAsset.preview}
@@ -783,42 +942,13 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                         <input type="file" accept="video/mp4" onChange={(event) => uploadFrameAsset('videoAsset', event.target.files?.[0])} />
                       </label>
                     </div>
+                    <div className="storage-path-hint">视频保存目录：{frameAssetStoragePath}</div>
                     <div className="muted">已上传：{activeFrame.videoAsset?.fileName || '无'}</div>
                   </div>
                 )}
               </div>
             )}
 
-            <div className="folder-card">
-              <button type="button" className={`folder-title ${expandedFolders.clipExport ? 'active' : ''}`} onClick={() => toggleFolder('clipExport')}>
-                下载至剪映（章节级）
-              </button>
-              {expandedFolders.clipExport && (
-                <div className="folder-body">
-                  <button type="button" disabled={!chapter.editingWorkflow?.clipExportReady} onClick={exportClipPackage}>
-                    下载至剪映
-                  </button>
-                  <label>
-                    章节级汇总文本
-                    <textarea
-                      className="large-input"
-                      value={chapter.editingWorkflow?.chapterSummary || ''}
-                      onChange={(event) => updateChapterSummary(event.target.value)}
-                      placeholder="填写本章节交付汇"
-                    />
-                  </label>
-                  <label>
-                    剪映代码（纯文本）
-                    <textarea
-                      className="large-input"
-                      value={chapter.editingWorkflow?.clipScriptText || ''}
-                      onChange={(event) => updateClipScript(event.target.value)}
-                      placeholder="粘贴剪映小助手生成的代码"
-                    />
-                  </label>
-                </div>
-              )}
-            </div>
           </div>
         )}
       </aside>

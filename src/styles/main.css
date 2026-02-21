@@ -30,6 +30,12 @@ a {
   color: #fff;
 }
 
+.app-header-fixed {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
 .app-header a {
   color: #e0e7ff;
   margin-left: 12px;
@@ -41,9 +47,14 @@ a {
 }
 
 .app-main {
-  padding: 24px;
+  padding: 84px 24px 24px;
   max-width: 1200px;
   margin: 0 auto;
+}
+
+.app-main-wide {
+  max-width: none;
+  padding: 10px 12px 12px;
 }
 
 .card {
