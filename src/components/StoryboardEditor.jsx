@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useData } from '../context/DataContext';
 import { saveFileWithFallback, sha256, validateFile } from '../utils/localFileBridge';
+import { SHOT_LEVEL_CONFIG, FIELD_LABELS } from './StoryboardEditor/constants/shotLevelConfig';
+import { RESOURCE_ABBREVIATIONS, RESOURCE_TYPE_LABELS } from './StoryboardEditor/constants/resourceConfig';
+import { getShotValidation } from './StoryboardEditor/utils/validators';
+import { migrateChapterStoryboard } from './StoryboardEditor/utils/migration';
 
 const levels = [
   { value: 'L1', label: 'L1 静态单层' },
@@ -9,12 +13,14 @@ const levels = [
   { value: 'L4', label: 'L4 多人交互' }
 ];
 
-const resourceTypeLabels = {
-  characters: '角色',
-  scenes: '场景',
-  props: '道具',
-  expressions: '表情'
-};
+const SHOT_TEMPLATES = [
+  { id: 'subjective-closeup', label: '主观视角近景', level: 'L1', shotType: '近景', cameraAngle: '平视主观', sceneDescription: '主角主观视角观察关键对象', visualDescription: '画面聚焦主体细节，突出情绪与信息点', editMethod: '硬切到下一镜头', transitionToNext: '硬切' },
+  { id: 'wide-establishing', label: '全景空镜', level: 'L1', shotType: '全景', cameraAngle: '高机位', sceneDescription: '交代环境关系和空间位置', visualDescription: '环境主体明确，画面留白用于后续剪辑衔接', editMethod: '淡入淡出', transitionToNext: '淡出' },
+  { id: 'multi-mid', label: '多人交互中景', level: 'L4', shotType: '中景', cameraAngle: '平视', sceneDescription: '两个及以上角色在同一场景互动', visualDescription: '保留角色关系线与动作反馈节奏', editMethod: '轴线内切换', transitionToNext: '动作匹配切' },
+  { id: 'detail-closeup', label: '特写镜头', level: 'L2', shotType: '特写', cameraAngle: '平视微仰', sceneDescription: '聚焦角色微表情或关键道具细节', visualDescription: '浅景深突出重点，背景简化', editMethod: '节奏点硬切', transitionToNext: '闪白切' },
+  { id: 'dynamic-transition', label: '动态转场镜头', level: 'L3', shotType: '运动镜头', cameraAngle: '跟拍', sceneDescription: '镜头随主体移动完成场景转换', visualDescription: '以运动方向引导视线并衔接下一场景', editMethod: '运动转场', transitionToNext: '推拉转场' }
+];
+
 
 const baseFrameFields = {
   title: '',
@@ -29,7 +35,7 @@ const baseFrameFields = {
 const makeOutlineItem = (index) => ({
   id: crypto.randomUUID(),
   order: index + 1,
-  text: `分镜头大纲 ${index + 1}`,
+  text: `核心镜头脉络 ${index + 1}`,
   detailUploaded: false
 });
 
@@ -58,7 +64,7 @@ const makeKeyframe = (index) => ({
 
 const makeShot = (index, outlineIndex = index) => ({
   id: crypto.randomUUID(),
-  shotNumber: `${index + 1}`,
+  shotNumber: `Shot-${String(index + 1).padStart(3, '0')}`,
   outlineIndex,
   synopsis: '',
   level: 'L1',
@@ -68,44 +74,110 @@ const makeShot = (index, outlineIndex = index) => ({
   keyframes: [],
   imageAsset: { fileName: '', localPath: '', remoteUrl: '', preview: '', updatedAt: null },
   videoAsset: { fileName: '', localPath: '', remoteUrl: '', preview: '', updatedAt: null },
+  transitionToNext: '',
   completed: false,
   completedAt: null
 });
 
-const isFrameResourcesReady = (frame) => !(frame.resources || []).some((resource) => resource.status !== 'uploaded');
+const getResourceTypeLabel = (type) => RESOURCE_TYPE_LABELS[type] || type;
 
-const isFrameAssetReady = (frame, level) => {
-  if (level === 'L1') return Boolean(frame.imageAsset?.fileName);
-  if (level === 'L3') return Boolean(frame.imageAsset?.fileName && frame.videoAsset?.fileName);
-  return true;
-};
+const toShotNumber = (index) => `Shot-${String(index + 1).padStart(3, '0')}`;
 
-const isShotReady = (shot) => {
-  if (shot.keyframesEnabled && (shot.keyframes || []).length > 0) {
-    return shot.keyframes.every((frame) => isFrameResourcesReady(frame) && isFrameAssetReady(frame, shot.level));
+const withReorderedShotNumbers = (shots = []) =>
+  shots.map((shot, index) => ({
+    ...shot,
+    shotNumber: toShotNumber(index)
+  }));
+
+const getResourceNamePrefix = (type) => RESOURCE_ABBREVIATIONS[type] || 'RS';
+
+const normalizeResourceName = ({ type, name, resources, currentId }) => {
+  const cleanedName = String(name || '').trim() || '未命名';
+  const prefix = getResourceNamePrefix(type);
+  const base = `${prefix}-${String(1).padStart(3, '0')} - ${cleanedName}`;
+
+  const existing = new Set(
+    (resources || [])
+      .filter((item) => item.id !== currentId)
+      .map((item) => String(item.name || '').trim())
+      .filter(Boolean)
+  );
+
+  if (!existing.has(base)) return { nextName: base, deduped: false };
+
+  let suffix = 1;
+  let candidate = `${base}_${suffix}`;
+  while (existing.has(candidate)) {
+    suffix += 1;
+    candidate = `${base}_${suffix}`;
   }
-  return isFrameResourcesReady(shot) && isFrameAssetReady(shot, shot.level);
+
+  return { nextName: candidate, deduped: true };
 };
 
-const getResourceTypeLabel = (type) => resourceTypeLabels[type] || type;
+const readFilePreview = async (file) => {
+  if (!file) return '';
+  return URL.createObjectURL(file);
+};
 
-const readFilePreview = (file) =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      resolve(typeof event.target?.result === 'string' ? event.target.result : '');
-    };
-    reader.onerror = () => reject(new Error('文件预览生成失败'));
-    reader.readAsDataURL(file);
-  });
+const safelyRevokePreview = (url) => {
+  if (typeof url === 'string' && url.startsWith('blob:')) {
+    URL.revokeObjectURL(url);
+  }
+};
 
 const parseLenientJson = (text) => {
   try {
     return JSON.parse(text);
   } catch (error) {
-    const wrapped = text.replace(/^[\uFEFF\s]+/, '').trim();
-    return JSON.parse(wrapped);
+    let cleaned = String(text || '').replace(/^[\uFEFF\s]+/, '').trim();
+    cleaned = cleaned
+      .replace(/\/\/.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, '"$1":')
+      .replace(/:\s*'([^']*?)'/g, ': "$1"')
+      .replace(/,\s*([}\]])/g, '$1');
+
+    try {
+      return JSON.parse(cleaned);
+    } catch (secondError) {
+      throw new Error(`JSON解析错误：${secondError.message}`);
+    }
   }
+};
+
+
+const isAllowedFileType = (file, mode = 'resource') => {
+  const ext = String(file?.name || '').split('.').pop()?.toLowerCase();
+  if (!ext) return false;
+  const imageExt = ['png', 'jpg', 'jpeg', 'webp'];
+  const videoExt = ['mp4', 'mov'];
+  if (mode === 'image') return imageExt.includes(ext);
+  if (mode === 'video') return videoExt.includes(ext);
+  return [...imageExt, ...videoExt].includes(ext);
+};
+
+
+const parseResourceAbbr = (value) => {
+  const raw = String(value || '').trim();
+  const parts = raw.split(/-+/).map((item) => item.trim()).filter(Boolean);
+  if (parts.length < 3) {
+    return { id: crypto.randomUUID(), type: 'characters', code: 'unknown', name: raw || '未命名资源', status: 'uploaded' };
+  }
+  const [abbr, code, ...rest] = parts;
+  const type = Object.keys(RESOURCE_ABBREVIATIONS).find((key) => RESOURCE_ABBREVIATIONS[key] === abbr) || 'characters';
+  return {
+    id: crypto.randomUUID(),
+    type,
+    code,
+    name: rest.join('-') || '未命名资源',
+    status: 'uploaded',
+    fileName: '',
+    localPath: '',
+    remoteUrl: '',
+    preview: '',
+    updatedAt: null
+  };
 };
 
 const StoryboardEditor = ({ novelId, chapter }) => {
@@ -115,8 +187,14 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const [activeFrameId, setActiveFrameId] = useState('main');
   const [zoomPreview, setZoomPreview] = useState(null);
   const [highlightIncompleteShotId, setHighlightIncompleteShotId] = useState('');
+  const [draggingShotId, setDraggingShotId] = useState('');
+  const [activeSideTab, setActiveSideTab] = useState('resources');
+  const [timelineZoom, setTimelineZoom] = useState(1);
+  const [showTemplateMenu, setShowTemplateMenu] = useState(false);
+  const [toasts, setToasts] = useState([]);
   const replaceInputRef = useRef(null);
   const outlineUploadRef = useRef(null);
+  const previewUrlsRef = useRef(new Set());
   const [expandedFolders, setExpandedFolders] = useState({
     missing: true,
     uploaded: false,
@@ -145,6 +223,43 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     [outlineItems, shots]
   );
 
+  const pushToast = (message, type = 'info') => {
+    const id = crypto.randomUUID();
+    setToasts((prev) => [...prev, { id, message, type }]);
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((item) => item.id !== id));
+    }, 2200);
+  };
+
+
+  const shotValidationById = useMemo(
+    () =>
+      shots.reduce((acc, shot) => {
+        acc[shot.id] = getShotValidation(shot);
+        return acc;
+      }, {}),
+    [shots]
+  );
+
+
+  const activeLevelRequiredFields = useMemo(() => {
+    const level = activeShot?.level || 'L1';
+    const config = SHOT_LEVEL_CONFIG[level] || SHOT_LEVEL_CONFIG.L1;
+    return (config.requiredFields || []).map((field) => FIELD_LABELS[field] || field);
+  }, [activeShot]);
+
+  useEffect(() => {
+    const migrationPatch = migrateChapterStoryboard(chapter);
+    if (migrationPatch) {
+      updateChapterPatch((currentChapter) => ({
+        editingWorkflow: {
+          ...(currentChapter.editingWorkflow || {}),
+          ...(migrationPatch.editingWorkflow || {})
+        }
+      }));
+    }
+  }, [chapter]);
+
   const toggleFolder = (key) =>
     setExpandedFolders((prev) => {
       if (key === 'missing') {
@@ -170,22 +285,63 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const ensureNoDuplicateHash = async (file) => {
     const hash = await sha256(file);
     let duplicate = false;
+    let existingPath = '';
 
     updateChapterPatch((currentChapter) => {
-      const existing = currentChapter.editingWorkflow?.fileHashes || [];
+      const workflow = currentChapter.editingWorkflow || {};
+      const existing = workflow.fileHashes || [];
+      const hashMap = workflow.fileHashMap || {};
       if (existing.includes(hash)) {
         duplicate = true;
+        existingPath = hashMap[hash] || '';
         return {};
       }
       return {
         editingWorkflow: {
-          ...(currentChapter.editingWorkflow || {}),
-          fileHashes: [...existing, hash]
+          ...workflow,
+          fileHashes: [...existing, hash],
+          fileHashMap: {
+            ...hashMap,
+            [hash]: ''
+          }
         }
       };
     });
 
-    return { duplicate, hash };
+    return { duplicate, hash, existingPath };
+  };
+
+  const applyFileHashPath = (hash, localPath) => {
+    updateChapterPatch((currentChapter) => ({
+      editingWorkflow: {
+        ...(currentChapter.editingWorkflow || {}),
+        fileHashMap: {
+          ...((currentChapter.editingWorkflow || {}).fileHashMap || {}),
+          [hash]: localPath || ''
+        }
+      }
+    }));
+  };
+
+  const updateAllAssetsByHash = (hash, payload) => {
+    updateChapterPatch((currentChapter) => {
+      const nextShots = (currentChapter.storyboardShots || []).map((shot) => {
+        const mainResources = (shot.resources || []).map((resource) => {
+          if (resource.fileHash !== hash) return resource;
+          return { ...resource, ...payload, updatedAt: Date.now(), status: 'uploaded' };
+        });
+        const keyframes = (shot.keyframes || []).map((frame) => ({
+          ...frame,
+          resources: (frame.resources || []).map((resource) => {
+            if (resource.fileHash !== hash) return resource;
+            return { ...resource, ...payload, updatedAt: Date.now(), status: 'uploaded' };
+          })
+        }));
+        return { ...shot, resources: mainResources, keyframes };
+      });
+
+      return { storyboardShots: nextShots };
+    });
   };
 
   const buildTargetPath = (resourceType = 'misc', subType = '') => {
@@ -196,12 +352,14 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   };
 
   const syncShotStatus = (nextShots) => {
-    const normalized = nextShots.map((shot) => {
-      const done = isShotReady(shot);
+    const normalized = withReorderedShotNumbers(nextShots).map((shot) => {
+      const validation = getShotValidation(shot);
+      const done = validation.isValid;
       return {
         ...shot,
         completed: done,
-        completedAt: done ? shot.completedAt || Date.now() : null
+        completedAt: done ? shot.completedAt || Date.now() : null,
+        missingRequirements: validation.missingLabels
       };
     });
     const clipExportReady = normalized.length > 0 && normalized.every((shot) => shot.completed);
@@ -226,86 +384,162 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     updateChapterPatch({ storyboardOutlineItems: next, storyboardOutlineUpdatedAt: Date.now() });
   };
 
-  const uploadOutlineDetail = async (id, file) => {
-    if (!file) return;
-    const detailContent = await file.text();
-    updateOutline(id, {
-      detailUploaded: true,
-      detailFileName: file.name,
-      detailContent,
-      detailUploadedAt: Date.now()
-    });
-  };
-
   const uploadAllOutlineItems = async (file) => {
     if (!file) return;
     try {
       const raw = await file.text();
       const parsed = parseLenientJson(raw);
-      const source = Array.isArray(parsed) ? parsed : parsed.outlineItems || parsed.storyboardOutlineItems || [];
+      const source = Array.isArray(parsed?.shot_logic_chain)
+        ? parsed.shot_logic_chain
+        : Array.isArray(parsed?.storyboardOutlineItems)
+          ? parsed.storyboardOutlineItems
+          : Array.isArray(parsed?.outlineItems)
+            ? parsed.outlineItems
+            : Array.isArray(parsed)
+              ? parsed
+              : [];
+
       if (!Array.isArray(source) || source.length === 0) {
-        alert('上传失败：未识别到分镜头大纲数组。');
+        pushToast('上传失败：未识别到镜头逻辑链数组。','error');
         return;
       }
-      const next = source.map((item, index) => ({
-        id: item.id || crypto.randomUUID(),
-        order: index + 1,
-        text: item.text || item.outlineText || item.content || `分镜头大纲 ${index + 1}`,
-        detailUploaded: Boolean(item.detailUploaded || item.detailContent),
-        detailFileName: item.detailFileName || '',
-        detailContent: item.detailContent || '',
-        detailUploadedAt: item.detailUploadedAt || null
+
+      const fromLegacy = !Array.isArray(parsed?.shot_logic_chain);
+      const sceneId = parsed?.sceneId || '';
+      const sceneName = parsed?.sceneName || '';
+
+      const nextShots = source.map((item, index) => {
+        const isNewShape = item?.mainFrame || item?.shotNumber;
+        const mainFrame = item?.mainFrame || {};
+        const resourcesRaw = mainFrame?.resources || item?.resources || [];
+        const resources = (Array.isArray(resourcesRaw) ? resourcesRaw : [])
+          .map((resource) => (typeof resource === 'string' ? parseResourceAbbr(resource) : resource))
+          .map((resource) => ({
+            id: resource?.id || crypto.randomUUID(),
+            type: resource?.type || 'characters',
+            name: resource?.name || '未命名资源',
+            status: resource?.status || 'uploaded',
+            subType: resource?.subType || '',
+            prompt: resource?.prompt || '',
+            fileName: resource?.fileName || '',
+            localPath: resource?.localPath || '',
+            remoteUrl: resource?.remoteUrl || '',
+            preview: resource?.preview || '',
+            updatedAt: resource?.updatedAt || null
+          }));
+
+        return {
+          id: item?.id || crypto.randomUUID(),
+          shotNumber: item?.shotNumber || toShotNumber(index),
+          outlineIndex: Number.isFinite(item?.outlineIndex)
+            ? item.outlineIndex
+            : ((chapter?.storyboardOutlineItems?.length || 0) > 0 ? 0 : -1),
+          synopsis: item?.synopsis || item?.text || item?.outlineText || item?.content || '',
+          level: item?.level || 'L1',
+          keyframesEnabled: item?.frameMode === 'keyframes',
+          keyframes: Array.isArray(item?.keyframes) ? item.keyframes : [],
+          title: mainFrame?.title || item?.title || '',
+          shotType: mainFrame?.shotType || item?.shotType || '',
+          cameraAngle: mainFrame?.cameraAngle || item?.cameraAngle || '',
+          sceneDescription: mainFrame?.sceneDescription || item?.sceneDescription || sceneName,
+          shotTime: item?.shotTime || '',
+          visualDescription: mainFrame?.visualDescription || item?.visualDescription || '',
+          editMethod: mainFrame?.editMethod || item?.editMethod || '',
+          transitionToNext: item?.transitionToNext || mainFrame?.transitionToNext || '',
+          duration: Number(mainFrame?.duration ?? item?.duration ?? 3) || 3,
+          imageAsset: mainFrame?.imageAsset || item?.imageAsset || { fileName: '', localPath: '', remoteUrl: '', preview: '', updatedAt: null },
+          videoAsset: mainFrame?.videoAsset || item?.videoAsset || { fileName: '', localPath: '', remoteUrl: '', preview: '', updatedAt: null },
+          resources,
+          completed: item?.status === 'completed' || item?.completed === true,
+          completedAt: item?.updatedAt || item?.completedAt || null,
+          status: item?.status || (item?.completed ? 'completed' : 'pending'),
+          audioPlaceholders: {
+            dialogue: item?.audioPlaceholders?.dialogue || item?.dialoguePlaceholder || '',
+            bgm: item?.audioPlaceholders?.bgm || item?.bgmPlaceholder || '',
+            sfx: item?.audioPlaceholders?.sfx || item?.sfxPlaceholder || ''
+          },
+          dialoguePlaceholder: item?.dialoguePlaceholder || item?.audioPlaceholders?.dialogue || '',
+          bgmPlaceholder: item?.bgmPlaceholder || item?.audioPlaceholders?.bgm || '',
+          sfxPlaceholder: item?.sfxPlaceholder || item?.audioPlaceholders?.sfx || ''
+        };
+      });
+
+      syncShotStatus(nextShots);
+      setActiveShotId(nextShots[0]?.id || '');
+      setActiveFrameId('main');
+
+      updateChapterPatch((currentChapter) => ({
+        storyboardOutlineItems: [{ id: crypto.randomUUID(), order: 1, text: `${sceneName || '默认场景'}镜头逻辑链`, detailUploaded: true }],
+        editingWorkflow: {
+          ...(currentChapter?.editingWorkflow || {}),
+          sceneId,
+          sceneName
+        }
       }));
-      updateChapterPatch({ storyboardOutlineItems: next, storyboardOutlineUpdatedAt: Date.now() });
-      setActiveOutlineId(next[0]?.id || '');
-      alert(`已上传 ${next.length} 条分镜头大纲。`);
+
+      if (nextShots.some((shot) => shot.outlineIndex === -1)) {
+        updateChapterPatch((currentChapter) => {
+          const defaultOutline = makeOutlineItem(0);
+          const patchedShots = (currentChapter?.storyboardShots || []).map((shot) =>
+            shot.outlineIndex === -1 ? { ...shot, outlineIndex: 0 } : shot
+          );
+          return {
+            storyboardOutlineItems: [defaultOutline],
+            storyboardShots: patchedShots
+          };
+        });
+      }
+
+      if (fromLegacy) {
+        pushToast('检测到旧版分镜数据，已自动转换为新格式，建议补充场景关联等信息。','warning');
+      } else {
+        pushToast(`成功导入 ${nextShots.length} 条镜头逻辑链数据。`,'success');
+      }
     } catch (error) {
-      alert('上传失败：JSON 解析错误。');
+      pushToast(`上传失败：${error instanceof Error ? error.message : '未知错误'}`,'error');
     }
-  };
-
-  const canDownloadDetail = (index) => {
-    if (index === 0) return true;
-    return Boolean(outlineItems[index - 1]?.detailUploaded);
-  };
-
-  const downloadOutlineDetail = (index) => {
-    const current = outlineItems[index];
-    if (!current) return;
-    const previous = index > 0 ? outlineItems[index - 1] : null;
-    const payload = {
-      outlineOrder: current.order,
-      outlineText: current.text,
-      previousOutlineContext: previous
-        ? {
-            order: previous.order,
-            text: previous.text,
-            detailContent: previous.detailContent || '',
-            detailUploadedAt: previous.detailUploadedAt || null
-          }
-        : null
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `outline-${current.order}-detail-task.json`;
-    link.click();
-    URL.revokeObjectURL(url);
   };
 
   const addShot = (outlineIndex = 0) => {
     const shot = makeShot(shots.length, outlineIndex);
-    const next = [...shots, shot];
+    const targetIndex = activeShotId ? shots.findIndex((item) => item.id === activeShotId) + 1 : shots.length;
+    const safeIndex = targetIndex > 0 ? targetIndex : shots.length;
+    const next = [...shots.slice(0, safeIndex), shot, ...shots.slice(safeIndex)];
     syncShotStatus(next);
     setActiveOutlineId(outlineItems[outlineIndex]?.id || '');
     setActiveShotId(shot.id);
     setActiveFrameId('main');
   };
 
+  const moveShot = (dragShotId, targetShotId, targetOutlineIndex) => {
+    if (!dragShotId) return;
+    const dragIndex = shots.findIndex((shot) => shot.id === dragShotId);
+    if (dragIndex < 0) return;
+
+    const moving = { ...shots[dragIndex] };
+    moving.outlineIndex = Number.isInteger(targetOutlineIndex) ? targetOutlineIndex : moving.outlineIndex;
+
+    const removed = shots.filter((shot) => shot.id !== dragShotId);
+    const targetIndex = targetShotId ? removed.findIndex((shot) => shot.id === targetShotId) : removed.length;
+    const safeIndex = targetIndex >= 0 ? targetIndex : removed.length;
+    const next = [...removed.slice(0, safeIndex), moving, ...removed.slice(safeIndex)];
+    syncShotStatus(next);
+  };
+
   const updateShot = (shotId, patch) => {
     const next = shots.map((shot) => (shot.id === shotId ? { ...shot, ...patch } : shot));
     syncShotStatus(next);
+  };
+
+
+  const deleteShot = (shotId) => {
+    const next = shots.filter((shot) => shot.id !== shotId);
+    syncShotStatus(next);
+    if (activeShotId === shotId) {
+      const fallback = next[0]?.id || '';
+      setActiveShotId(fallback);
+      setActiveFrameId('main');
+    }
   };
 
   const updateActiveFrame = (patch) => {
@@ -346,9 +580,23 @@ const StoryboardEditor = ({ novelId, chapter }) => {
 
   const updateResource = (resourceId, patch) => {
     if (!activeFrame) return;
-    const nextResources = (activeFrame.resources || []).map((resource) =>
-      resource.id === resourceId ? { ...resource, ...patch } : resource
-    );
+    const nextResources = (activeFrame.resources || []).map((resource) => {
+      if (resource.id !== resourceId) return resource;
+      const merged = { ...resource, ...patch };
+      if (Object.prototype.hasOwnProperty.call(patch, 'name') || Object.prototype.hasOwnProperty.call(patch, 'type')) {
+        const { nextName, deduped } = normalizeResourceName({
+          type: merged.type,
+          name: merged.name,
+          resources: activeFrame.resources,
+          currentId: resourceId
+        });
+        if (deduped) {
+          pushToast('名称重复，已自动补充后缀。','warning');
+        }
+        return { ...merged, name: nextName };
+      }
+      return merged;
+    });
     updateActiveFrame({ resources: nextResources });
   };
 
@@ -356,15 +604,22 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     if (!file || !activeFrame) return;
     const check = validateFile(file);
     if (!check.ok) {
-      alert(check.message);
+      pushToast(check.message,'error');
+      return;
+    }
+    if (!isAllowedFileType(file, 'resource')) {
+      pushToast('仅支持 png/jpg/jpeg/webp/mp4/mov 格式。','error');
       return;
     }
 
     try {
-      const { duplicate } = await ensureNoDuplicateHash(file);
+      const { duplicate, hash } = await ensureNoDuplicateHash(file);
       if (duplicate) {
-        alert('检测到重复文件，已阻止上传。');
-        return;
+        const confirmed = window.confirm('检测到重复文件，是否覆盖并同步更新所有同 hash 资源路径？');
+        if (!confirmed) {
+          pushToast('已取消覆盖。', 'warning');
+          return;
+        }
       }
 
       const resource = (activeFrame.resources || []).find((item) => item.id === resourceId);
@@ -373,6 +628,9 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         saveFileWithFallback({ file, targetPath }),
         readFilePreview(file)
       ]);
+      if (preview) previewUrlsRef.current.add(preview);
+      safelyRevokePreview(resource?.preview);
+      if (resource?.preview) previewUrlsRef.current.delete(resource.preview);
 
       updateResource(resourceId, {
         status: 'uploaded',
@@ -380,14 +638,23 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         localPath: saveResult.localPath,
         preview,
         updatedAt: Date.now(),
-        sourceType: saveResult.source
+        sourceType: saveResult.source,
+        fileHash: hash
+      });
+      applyFileHashPath(hash, saveResult.localPath);
+      updateAllAssetsByHash(hash, {
+        fileName: file.name,
+        localPath: saveResult.localPath,
+        preview,
+        sourceType: saveResult.source,
+        fileHash: hash
       });
 
       if (saveResult.error) {
-        alert('本地服务不可用，已使用本地占位路径保存记录。');
+        pushToast('本地服务不可用，已使用本地占位路径保存记录。','warning');
       }
     } catch (error) {
-      alert(error instanceof Error ? error.message : '资源上传失败，请重试。');
+      pushToast(error instanceof Error ? error.message : '资源上传失败，请重试。','error');
     }
   };
 
@@ -395,15 +662,23 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     if (!file || !activeFrame) return;
     const check = validateFile(file);
     if (!check.ok) {
-      alert(check.message);
+      pushToast(check.message,'error');
+      return;
+    }
+    const mode = field === 'videoAsset' ? 'video' : 'image';
+    if (!isAllowedFileType(file, mode)) {
+      pushToast(mode === 'video' ? '视频仅支持 mp4/mov 格式。' : '图片仅支持 png/jpg/jpeg/webp 格式。','error');
       return;
     }
 
     try {
-      const { duplicate } = await ensureNoDuplicateHash(file);
+      const { duplicate, hash } = await ensureNoDuplicateHash(file);
       if (duplicate) {
-        alert('检测到重复文件，已阻止上传。');
-        return;
+        const confirmed = window.confirm('检测到重复文件，是否覆盖当前素材？');
+        if (!confirmed) {
+          pushToast('已取消覆盖。', 'warning');
+          return;
+        }
       }
 
       const targetPath = buildTargetPath('shot-assets', activeShot?.level || 'L1');
@@ -411,6 +686,9 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         saveFileWithFallback({ file, targetPath }),
         readFilePreview(file)
       ]);
+      if (preview) previewUrlsRef.current.add(preview);
+      safelyRevokePreview(activeFrame?.[field]?.preview);
+      if (activeFrame?.[field]?.preview) previewUrlsRef.current.delete(activeFrame?.[field]?.preview);
 
       updateActiveFrame({
         [field]: {
@@ -419,15 +697,17 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           remoteUrl: '',
           preview,
           updatedAt: Date.now(),
-          sourceType: saveResult.source
+          sourceType: saveResult.source,
+          fileHash: hash
         }
       });
+      applyFileHashPath(hash, saveResult.localPath);
 
       if (saveResult.error) {
-        alert('本地服务不可用，已使用本地占位路径保存记录。');
+        pushToast('本地服务不可用，已使用本地占位路径保存记录。','warning');
       }
     } catch (error) {
-      alert(error instanceof Error ? error.message : '素材上传失败，请重试。');
+      pushToast(error instanceof Error ? error.message : '素材上传失败，请重试。','error');
     }
   };
 
@@ -451,15 +731,16 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           shotTime: shot.shotTime,
           visualDescription: shot.visualDescription,
           editMethod: shot.editMethod,
+          transitionToNext: shot.transitionToNext || '',
           resources: shot.resources,
           imageAsset: shot.imageAsset,
           videoAsset: shot.videoAsset
         },
         keyframes: shot.keyframes || [],
         audioPlaceholders: {
-          dialogue: shot.dialoguePlaceholder || '',
-          bgm: shot.bgmPlaceholder || '',
-          sfx: shot.sfxPlaceholder || ''
+          dialogue: shot.audioPlaceholders?.dialogue || shot.dialoguePlaceholder || '',
+          bgm: shot.audioPlaceholders?.bgm || shot.bgmPlaceholder || '',
+          sfx: shot.audioPlaceholders?.sfx || shot.sfxPlaceholder || ''
         }
       }))
     };
@@ -474,13 +755,21 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   };
 
   const handleClipExportClick = () => {
-    const firstIncomplete = shots.find((shot) => !shot.completed);
-    if (firstIncomplete) {
-      setActiveShotId(firstIncomplete.id);
+    const invalidShots = shots
+      .map((shot) => ({ shot, validation: getShotValidation(shot) }))
+      .filter((item) => !item.validation.isValid);
+
+    if (invalidShots.length > 0) {
+      const firstIncomplete = invalidShots[0].shot;
+      setActiveShotId(firstIncomplete?.id || '');
       setActiveFrameId('main');
-      const relatedOutline = outlineItems[firstIncomplete.outlineIndex];
+      const relatedOutline = outlineItems[firstIncomplete?.outlineIndex ?? 0];
       if (relatedOutline) setActiveOutlineId(relatedOutline.id);
-      setHighlightIncompleteShotId((prev) => (prev === firstIncomplete.id ? '' : firstIncomplete.id));
+      setHighlightIncompleteShotId((prev) => (prev === firstIncomplete?.id ? '' : firstIncomplete?.id || ''));
+      const detail = invalidShots
+        .map((item) => `${item.shot.shotNumber}（${item.shot.level}）：${item.validation.missingLabels.join('、')}`)
+        .join('\n');
+      pushToast(`导出失败，存在未通过校验的镜头：${detail}`,'error');
       return;
     }
     setHighlightIncompleteShotId('');
@@ -505,6 +794,40 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         chapterSummaryUpdatedAt: Date.now()
       }
     }));
+  };
+
+  const saveCurrentShotChecklist = () => {
+    if (!activeShot) {
+      pushToast('请先选择镜头。', 'warning');
+      return;
+    }
+    updateShot(activeShot.id, { checklistSavedAt: Date.now() });
+    pushToast(`已保存当前镜头 ${activeShot.shotNumber} 清单。`, 'success');
+  };
+
+  const saveAllStoryboard = () => {
+    updateChapterPatch((currentChapter) => ({
+      editingWorkflow: {
+        ...(currentChapter.editingWorkflow || {}),
+        fullStoryboardSavedAt: Date.now()
+      }
+    }));
+    pushToast('已保存全局分镜数据。', 'success');
+  };
+
+  const applyShotTemplate = (template) => {
+    if (!activeShot || !template) return;
+    updateShot(activeShot.id, {
+      level: template.level,
+      shotType: template.shotType,
+      cameraAngle: template.cameraAngle,
+      sceneDescription: template.sceneDescription,
+      visualDescription: template.visualDescription,
+      editMethod: template.editMethod,
+      transitionToNext: template.transitionToNext
+    });
+    setShowTemplateMenu(false);
+    pushToast(`已套用模板：${template.label}`, 'success');
   };
 
   const triggerPreviewDownload = (src, fileName) => {
@@ -561,6 +884,23 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     };
   }, [dragTarget]);
 
+
+  useEffect(() => () => {
+    previewUrlsRef.current.forEach((url) => safelyRevokePreview(url));
+    previewUrlsRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    const onKeydown = (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 't') {
+        event.preventDefault();
+        setShowTemplateMenu((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', onKeydown);
+    return () => window.removeEventListener('keydown', onKeydown);
+  }, []);
+
   return (
     <div
       className={`storyboard-workspace ${dragTarget ? 'resizing' : ''}`}
@@ -569,6 +909,10 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       <section className="storyboard-editor-panel">
         <div className="storyboard-editor-header">
           <h3>镜头编辑</h3>
+          <div className="row" style={{ gap: 8 }}>
+            <button type="button" className="button-secondary" onClick={() => setShowTemplateMenu((prev) => !prev)}>模板 (Ctrl+T)</button>
+            <button type="button" onClick={saveCurrentShotChecklist}>保存清单</button>
+          </div>
         </div>
         <div className="storyboard-editor-scroll">
           {!activeShot && <div className="empty">请选择中部镜头后进行编辑。</div>}
@@ -598,6 +942,11 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                   </label>
                 </div>
               </div>
+              {!shotValidationById[activeShot.id]?.isValid && (
+                <div className="muted" style={{ color: '#F5222D' }}>
+                  缺失项：{(shotValidationById[activeShot.id]?.missingLabels || []).join('、')}
+                </div>
+              )}
 
               {activeShot.keyframesEnabled && (
                 <div className="row wrap" style={{ marginBottom: 8 }}>
@@ -684,6 +1033,14 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                       onChange={(event) => updateActiveFrame({ editMethod: event.target.value })}
                     />
                   </label>
+                  <label className="span-2">
+                    转场标注（到下一镜）
+                    <input
+                      value={activeShot.transitionToNext || ''}
+                      onChange={(event) => updateShot(activeShot.id, { transitionToNext: event.target.value })}
+                      placeholder="例如：硬切 / 淡出 / 动作匹配切"
+                    />
+                  </label>
                 </div>
               )}
             </div>
@@ -702,8 +1059,9 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         <div className="storyboard-main-header sticky">
           <h3>分镜头工作区</h3>
           <div className="row">
+            <button type="button" className="button-secondary" onClick={saveAllStoryboard}>保存</button>
             <button type="button" className="button-secondary" onClick={() => outlineUploadRef.current?.click()}>
-              上传分镜头大纲
+              导入逐镜清单
             </button>
             <input
               ref={outlineUploadRef}
@@ -716,16 +1074,25 @@ const StoryboardEditor = ({ novelId, chapter }) => {
               type="button"
               className={`clip-export-top-button ${chapter.editingWorkflow?.clipExportReady ? 'ready' : 'pending'}`}
               onClick={handleClipExportClick}
+              disabled={!chapter?.editingWorkflow?.clipExportReady}
+              title={!chapter?.editingWorkflow?.clipExportReady ? '存在未完善镜头，请补全必填项。' : '导出剪映清单'}
             >
-              下载至剪映
+              导出剪映清单
             </button>
           </div>
         </div>
 
         <div className="storyboard-main-scroll">
           <div className="section-header">
-            <h3>分镜头大纲</h3>
-            <button type="button" onClick={addOutline}>新增大纲</button>
+            <h3>核心镜头脉络</h3>
+            <div className="row" style={{ gap: 8 }}>
+              <label className="row" style={{ gap: 6 }}>
+                时间轴缩放
+                <input type="range" min="0.8" max="1.2" step="0.1" value={timelineZoom} onChange={(event) => setTimelineZoom(Number(event.target.value))} />
+                <span>{timelineZoom.toFixed(1)}x</span>
+              </label>
+              <button type="button" onClick={addOutline}>新增场景</button>
+            </div>
           </div>
 
           <div className="outline-list">
@@ -739,7 +1106,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                   <strong>#{outline.order}</strong>
                   <div className="row">
                     <span className={`status-pill ${outline.detailUploaded ? 'green' : 'orange'}`}>
-                      {outline.detailUploaded ? '细纲已上传' : '待上传细纲'}
+                      {outline.detailUploaded ? '场景已关联' : '待补充场景'}
                     </span>
                     <button type="button" className="tab" onClick={() => addShot(outlineIndex)}>新增镜头</button>
                   </div>
@@ -748,45 +1115,75 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                   className="outline-inline-input"
                   value={outline.text}
                   onChange={(event) => updateOutline(outline.id, { text: event.target.value })}
-                  placeholder="输入大纲内容（建议 1-2 句）"
+                  placeholder="输入场景或镜头逻辑链描述（建议 1-2 句）"
                 />
-                <div className="row">
-                  <button type="button" disabled={!canDownloadDetail(outlineIndex)} onClick={() => downloadOutlineDetail(outlineIndex)}>
-                    下载分镜头细纲
-                  </button>
-                  <label className="file-button">
-                    上传分镜头细纲
-                    <input
-                      type="file"
-                      accept="application/json,text/plain"
-                      onChange={(event) => uploadOutlineDetail(outline.id, event.target.files?.[0])}
-                    />
-                  </label>
-                </div>
 
-                <div className="outline-shot-list">
-                  {outlineShots.map((shot) => (
-                    <button
-                      key={shot.id}
-                      type="button"
-                      className={`shot-row ${activeShotId === shot.id ? 'active' : ''} ${highlightIncompleteShotId === shot.id ? 'highlight-danger' : ''}`}
-                      onClick={() => {
-                        setActiveShotId(shot.id);
-                        setActiveFrameId('main');
-                        setHighlightIncompleteShotId('');
-                      }}
-                    >
-                      <span>#{shot.shotNumber}</span>
-                      <span>{shot.synopsis || shot.title || '未命名镜头'}</span>
-                      <span>{shot.level}</span>
-                      <span>{shot.completed ? '完成' : '制作中'}</span>
-                    </button>
-                  ))}
+                <div
+                  className="outline-shot-list"
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={() => {
+                    if (draggingShotId) {
+                      moveShot(draggingShotId, null, outlineIndex);
+                      setDraggingShotId('');
+                    }
+                  }}
+                >
+                  {outlineShots.map((shot) => {
+                    const validation = shotValidationById[shot.id] || { isValid: true, missingLabels: [] };
+                    return (
+                      <button
+                        key={shot.shotNumber}
+                        type="button"
+                        draggable
+                        title={validation.isValid ? '' : `缺失：${validation.missingLabels.join('、')}`}
+                        className={`shot-row ${activeShotId === shot.id ? 'active' : ''} ${highlightIncompleteShotId === shot.id ? 'highlight-danger' : ''} ${!validation.isValid ? 'highlight-danger' : ''}`}
+                        style={{
+                          gridTemplateColumns: `${95 * timelineZoom}px minmax(${180 * timelineZoom}px,1fr) ${70 * timelineZoom}px ${70 * timelineZoom}px 48px`,
+                          gap: `${8 * timelineZoom}px`,
+                          padding: `${8 * timelineZoom}px`
+                        }}
+                        onDragStart={() => setDraggingShotId(shot.id)}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          moveShot(draggingShotId, shot.id, outlineIndex);
+                          setDraggingShotId('');
+                        }}
+                        onClick={() => {
+                          setActiveShotId(shot.id);
+                          setActiveFrameId('main');
+                          setHighlightIncompleteShotId('');
+                        }}
+                      >
+                        <span>#{shot.shotNumber}</span>
+                        <span>{shot.synopsis || shot.title || '未命名镜头'}</span>
+                        <span>{shot.level}</span>
+                        <span>{shot.completed ? '完成' : '未完善'}</span>
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            deleteShot(shot.id);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              deleteShot(shot.id);
+                            }
+                          }}
+                        >
+                          删除
+                        </span>
+                      </button>
+                    );
+                  })}
                   {outlineShots.length === 0 && <div className="empty">当前大纲暂无二级分镜头。</div>}
                 </div>
               </div>
             ))}
-            {outlineItems.length === 0 && <div className="empty">暂无分镜头大纲，请先上传或新增。</div>}
+            {outlineItems.length === 0 && <div className="empty">暂无核心镜头脉络，请先上传或新增。</div>}
           </div>
         </div>
       </section>
@@ -803,14 +1200,25 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           <div>
             <h3>资源面板</h3>
             <div className="storage-path-hint">资源默认保存：{resourceStoragePath}</div>
+            <div className="row" style={{ marginTop: 8, gap: 8 }}>
+              <button type="button" className={activeSideTab === 'resources' ? 'tab active' : 'tab'} onClick={() => setActiveSideTab('resources')}>资源</button>
+              <button type="button" className={activeSideTab === 'scenes' ? 'tab active' : 'tab'} onClick={() => setActiveSideTab('scenes')}>场景</button>
+            </div>
           </div>
-          <button type="button" onClick={addResource} disabled={!activeFrame}>+ 资源</button>
+          <div className="row" style={{ gap: 8 }}>
+            <button type="button" className="button-secondary" onClick={() => setActiveSideTab('scenes')}>场景库</button>
+            <button type="button" className="button-secondary" onClick={saveCurrentShotChecklist}>保存清单</button>
+            <button type="button" onClick={addResource} disabled={!activeFrame || activeSideTab !== 'resources'}>+ 资源</button>
+          </div>
         </div>
 
         {!activeFrame && <div className="empty">请选择镜头后编辑资源。</div>}
 
         {activeFrame && (
           <div className="storyboard-side-scroll">
+            {activeSideTab === 'scenes' && <div className="empty">场景库已打开（左侧场景 Tab）。</div>}
+            {activeSideTab === 'resources' && (
+            <>
             <div className="folder-card">
               <button type="button" className={`folder-title ${expandedFolders.missing ? 'active' : ''}`} onClick={() => toggleFolder('missing')}>
                 <span className="folder-title-badge danger">缺失资源</span>
@@ -825,8 +1233,8 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                       <label>
                         资源类型
                         <select value={resource.type} onChange={(event) => updateResource(resource.id, { type: event.target.value })}>
-                          {Object.keys(resourceTypeLabels).map((type) => (
-                            <option key={type} value={type}>{resourceTypeLabels[type]}</option>
+                          {Object.keys(RESOURCE_TYPE_LABELS).map((type) => (
+                            <option key={type} value={type}>{RESOURCE_TYPE_LABELS[type]}</option>
                           ))}
                         </select>
                       </label>
@@ -848,7 +1256,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                       </label>
                       <label className="placeholder-upload">
                         上传资源
-                        <input type="file" accept="image/*,video/mp4" onChange={(event) => uploadResourceFile(resource.id, event.target.files?.[0])} />
+                        <input type="file" accept=".png,.jpg,.jpeg,.webp,.mp4,.mov" onChange={(event) => uploadResourceFile(resource.id, event.target.files?.[0])} />
                       </label>
                       <div className="storage-path-hint">目标目录：{buildTargetPath(resource.type, resource.subType)}</div>
                     </div>
@@ -880,7 +1288,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                           <button type="button" onClick={() => triggerPreviewDownload(resource.preview, resource.fileName)}>下载</button>
                           <label className="file-button compact">
                             替换
-                            <input type="file" accept="image/*,video/mp4" onChange={(event) => uploadResourceFile(resource.id, event.target.files?.[0])} />
+                            <input type="file" accept=".png,.jpg,.jpeg,.webp,.mp4,.mov" onChange={(event) => uploadResourceFile(resource.id, event.target.files?.[0])} />
                           </label>
                         </div>
                       </div>
@@ -911,7 +1319,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                       <button type="button">下载图片任务包</button>
                       <label className="file-button">
                         上传图片
-                        <input type="file" accept="image/*" onChange={(event) => uploadFrameAsset('imageAsset', event.target.files?.[0])} />
+                        <input type="file" accept=".png,.jpg,.jpeg,.webp" onChange={(event) => uploadFrameAsset('imageAsset', event.target.files?.[0])} />
                       </label>
                     </div>
                     <div className="storage-path-hint">图片保存目录：{frameAssetStoragePath}</div>
@@ -939,7 +1347,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                       <button type="button">下载视频任务包</button>
                       <label className="file-button">
                         上传视频
-                        <input type="file" accept="video/mp4" onChange={(event) => uploadFrameAsset('videoAsset', event.target.files?.[0])} />
+                        <input type="file" accept=".mp4,.mov" onChange={(event) => uploadFrameAsset('videoAsset', event.target.files?.[0])} />
                       </label>
                     </div>
                     <div className="storage-path-hint">视频保存目录：{frameAssetStoragePath}</div>
@@ -949,9 +1357,25 @@ const StoryboardEditor = ({ novelId, chapter }) => {
               </div>
             )}
 
+            </>
+            )}
           </div>
         )}
       </aside>
+
+      {showTemplateMenu && (
+        <div className="template-menu">
+          {SHOT_TEMPLATES.map((template) => (
+            <button key={template.id} type="button" className="template-item" onClick={() => applyShotTemplate(template)}>{template.label}</button>
+          ))}
+        </div>
+      )}
+
+      {toasts.length > 0 && (
+        <div className="toast-stack">
+          {toasts.map((toast) => <div key={toast.id} className={`toast-item ${toast.type}`}>{toast.message}</div>)}
+        </div>
+      )}
 
       {zoomPreview?.src && (
         <div className="modal" onClick={() => setZoomPreview(null)}>
@@ -962,7 +1386,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
               <input
                 ref={replaceInputRef}
                 type="file"
-                accept="image/*,video/mp4"
+                accept=".png,.jpg,.jpeg,.webp,.mp4,.mov"
                 onChange={(event) => applyZoomReplacement(event.target.files?.[0])}
               />
             </label>

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import '../styles/main.css';
 
 const Layout = ({ children }) => {
   const location = useLocation();
