@@ -1,19 +1,15 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { getImageById, storeImageData } from '../utils/imageStore';
+import { DEFAULT_RESOURCE_KEYS } from '../config/resourceCategories';
 
 const DataContext = createContext();
 const STORAGE_KEY = 'novel-storyboard-data';
 
-const defaultResources = {
-  characters: [],
-  expressions: [],
-  scenes: [],
-  props: [],
-  animations: [],
-  music: [],
-  voiceovers: []
-};
+const defaultResources = DEFAULT_RESOURCE_KEYS.reduce((acc, key) => {
+  acc[key] = [];
+  return acc;
+}, {});
 
 const defaultData = {
   novels: [],

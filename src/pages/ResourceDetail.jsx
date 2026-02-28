@@ -2,41 +2,43 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import JSZip from 'jszip';
 import { useData } from '../context/DataContext';
+import {
+  expressionTabs,
+  riskOptions,
+  scopeOptions,
+  strategyOptions,
+  typeLabels
+} from './resourceDetail/constants';
+import { ensureResourceRule } from './resourceDetail/ruleTemplates';
+import { downloadJson, loadZip, readFileAsDataUrl, readFilesAsDataUrlEntries } from './resourceDetail/fileUtils';
+import {
+  exportGrowthHistory,
+  exportRelationshipGraph,
+  exportSceneRule,
+  importGrowthHistory,
+  importRelationshipGraph,
+  importSceneRule
+} from './resourceDetail/jsonHandlers';
+import { buildAssetEntries, mergeImagesFromFiles, mergeImagesFromZip } from './resourceDetail/uploadHandlers';
+import {
+  getRelationByTarget,
+  getSceneVariantRequirements,
+  hasSceneVariantMissing,
+  sortSceneVariantsByMissing
+} from './resourceDetail/relationUtils';
+import CharacterBaseSection from './resourceDetail/CharacterBaseSection';
+import CharacterGrowthSection from './resourceDetail/CharacterGrowthSection';
+import CharacterEditModalSection from './resourceDetail/CharacterEditModalSection';
+import CharacterPreviewFooterSection from './resourceDetail/CharacterPreviewFooterSection';
+import CharacterAppearanceSection from './resourceDetail/CharacterAppearanceSection';
+import CharacterRelationsSection from './resourceDetail/CharacterRelationsSection';
+import SceneSection from './resourceDetail/SceneSection';
+import SceneEditModalSection from './resourceDetail/SceneEditModalSection';
+import ExpressionSection from './resourceDetail/ExpressionSection';
+import PropSection from './resourceDetail/PropSection';
+import NonCharacterHeaderSection from './resourceDetail/NonCharacterHeaderSection';
+import NonCharacterFooterMetaSection from './resourceDetail/NonCharacterFooterMetaSection';
 import '../styles/resource-enhancements.css';
-
-const typeLabels = {
-  characters: '角色',
-  expressions: '表情',
-  scenes: '场景',
-  props: '道具',
-  animations: '动画',
-  music: '背景音乐',
-  voiceovers: '角色配音'
-};
-
-const expressionTabs = [
-  { key: 'base', label: '基础信息' },
-  { key: 'assets', label: '参考图 & 素材' },
-  { key: 'transfer', label: '导出/导入' }
-];
-
-const scopeOptions = [
-  { value: 'chibi', label: 'Q版' },
-  { value: 'normal', label: '普通比例' },
-  { value: 'universal', label: '通用' }
-];
-
-const riskOptions = [
-  { value: 'low', label: '低' },
-  { value: 'mid', label: '中' },
-  { value: 'high', label: '高' }
-];
-
-const strategyOptions = [
-  { value: 'direct_generate', label: '直接生图' },
-  { value: 'img2img_character', label: '图生图' },
-  { value: 'hybrid', label: '混合' }
-];
 
 const ResourceDetail = () => {
   const { type, resourceId } = useParams();
@@ -110,141 +112,7 @@ const ResourceDetail = () => {
   }, [resourceId, resource, type]);
 
   useEffect(() => {
-    if (type !== 'characters') return;
-    const existing = (data.rules || []).some((rule) => rule.tool === '角色资源');
-    if (existing) return;
-    upsertRule({
-      tool: '角色资源',
-      description: '角色资源库与分镜头 AI / 图片回传交互规则说明。',
-      parameters: {
-        storyboardRules: {
-          overview: '分镜头 AI 负责回传角色基础信息、形态信息、关系网等结构化内容。',
-          baseInfo: {
-            name: 'string，角色名称。',
-            tags: 'string[]，角色标签数组。',
-            background: 'string，角色背景描述，默认映射为基础信息展示内容。',
-            priorityPin: 'boolean，是否置顶角色。',
-            personalitySetting: 'string，性格设定（心理特征、动机、恐惧点等）。',
-            growthTrajectory: 'string，成长轨迹描述（变化与转折点）。'
-          },
-          formInfo: {
-            formName: 'string，形态名称；当需要新增形态时需提供。',
-            persona: 'string，角色人设内容。',
-            appearance: 'string，外貌描写内容，用于导出提示词。'
-          },
-          references: {
-            referenceCharacterId: 'string，参考角色 ID。',
-            referenceFormName: 'string，参考角色形态名称。',
-            target: 'string，参考目标特征（如发型/服饰）。',
-            weight: 'number，权重 0-100。'
-          },
-          relationshipGraph: {
-            nodes: 'array，其他角色节点（id/name）。',
-            relations:
-              'array，中心角色与目标角色关系。字段示例：source/target/relation/emotions/currentEmotion/cause/consequence。'
-          },
-          characterGrowthHistory: {
-            entries: 'array，角色成长史节点（chapter/change/description）。'
-          }
-        },
-        imageRules: {
-          overview: '图片由分镜头 AI 生成后回传，需标注视角或特征名称。',
-          viewRequirements: 'string[]，视角需求列表（如正面、侧面、背面、45°等）。',
-          viewAsset: {
-            viewAngle: 'string，视角名称，需与 viewRequirements 对应。',
-            fileName: 'string，建议命名：角色名-形态名-视角名-序号.ext。',
-            storage: '本地部署使用 base64/Blob 存储在浏览器数据中，不支持直接写入本地路。'
-          }
-        }
-      }
-    });
-  }, [data.rules, type, upsertRule]);
-
-  useEffect(() => {
-    if (type !== 'scenes') return;
-    const existing = (data.rules || []).some((rule) => rule.tool === '场景资源');
-    if (existing) return;
-    upsertRule({
-      tool: '场景资源',
-      description: '场景资源库与分镜头 AI 的交互规则说明。',
-      parameters: {
-        storyboardRules: {
-          overview: '分镜头 AI 负责回传场景结构、描述与图片需求。',
-          sceneLayout: {
-            elements: [
-              {
-                type: 'character|prop|background',
-                name: '元素名称',
-                x: '0~1 场景坐标',
-                y: '0~1 场景坐标',
-                direction: '0~360，仅角色需要'
-              }
-            ]
-          },
-          sceneDescription: 'string，场景整体描述。',
-          sceneElementDetails: [
-            {
-              element: '元素名称',
-              detail: '补充描写'
-            }
-          ],
-          sceneVariants: [
-            {
-              name: '可选，场景版本名称',
-              season: '季节',
-              weather: '天气',
-              time: '时间',
-              imageRequirements: ['全景图-1', '全景图-2'],
-              images: [{ label: '全景图-1', src: 'base64' }]
-            }
-          ]
-        },
-        imageRules: {
-          overview: '图片由分镜头 AI 回传创建需求卡片，再人工或自动上传。',
-          fileName: '建议命名：场景名-季节-时间-序号.ext（可在需求内说明）'
-        },
-        questions: [
-          '是否需要将同类型场景（例如小炒店）归为同一标签以便参考？',
-          '是否需要额外提供局部图或关键元素图的需求？'
-        ]
-      }
-    });
-  }, [data.rules, type, upsertRule]);
-
-
-  useEffect(() => {
-    if (type !== 'expressions') return;
-    const existing = (data.rules || []).some((rule) => rule.tool === '表情资源');
-    if (existing) return;
-    upsertRule({
-      tool: '表情资源',
-      description: '表情资源库（颜艺）与分镜头 AI 的交互规则说明。',
-      parameters: {
-        storyboardRules: {
-          overview: '分镜头 AI 负责回传表情基础信息、规则说明与生图包需求。',
-          baseInfo: {
-            name: 'string，表情名称。',
-            tags: 'string[]，表情标签数组。',
-            emotionType: 'string，情绪类型。',
-            emotionValue: 'string，情绪强度。',
-            background: 'string，匹配场景背景。'
-          },
-          ruleText: 'string，自然语言规则说明。',
-          transferRequests: [
-            {
-              id: 'string，需求卡片 ID。',
-              name: 'string，需求名称。',
-              character: 'string，角色名称。',
-              cover: 'string，可选，封面图 base64。'
-            }
-          ]
-        },
-        imageRules: {
-          overview: '上传主参考图作为表情视觉锚点。',
-          mainReference: '上传主参考图，建议命名：表情名-主参考.ext。'
-        }
-      }
-    });
+    ensureResourceRule({ type, rules: data.rules, upsertRule });
   }, [data.rules, type, upsertRule]);
 
   if (!data.resources[type]) return <div className="card">资源类型不存在</div>;
@@ -274,32 +142,13 @@ const ResourceDetail = () => {
       : `${Date.now()}-${Math.random()}`;
 
   const addAssets = async (files, role, ownerName) => {
-    const uploadedAt = new Date().toISOString();
-    const nextVersion =
-      Math.max(
-        0,
-        ...assets
-          .filter((asset) => asset.role === role && asset.ownerName === ownerName)
-          .map((asset) => asset.version || 0)
-      ) + 1;
-    const readers = files.map(
-      (file) =>
-        new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve({ src: e.target.result, name: file.name });
-          reader.readAsDataURL(file);
-        })
-    );
-    const results = await Promise.all(readers);
-    const nextAssets = results.map((result) => ({
-      id: createAssetId(),
+    const nextAssets = await buildAssetEntries({
+      files,
+      assets,
       role,
       ownerName,
-      version: nextVersion,
-      uploadedAt,
-      fileName: result.name,
-      src: result.src
-    }));
+      createAssetId
+    });
     setAssets((prev) => [...prev, ...nextAssets]);
     return nextAssets;
   };
@@ -357,16 +206,10 @@ const ResourceDetail = () => {
   const handleSingleUpload = async (event) => {
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
-    const readers = files.map(
-      (file) =>
-        new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target.result);
-          reader.readAsDataURL(file);
-        })
-    );
-    const images = await Promise.all(readers);
-    const merged = [...(resource.images || []), ...images];
+    const merged = await mergeImagesFromFiles({
+      files,
+      currentImages: resource.images || []
+    });
     updateResourceImages(type, resourceId, merged);
   };
 
@@ -375,16 +218,10 @@ const ResourceDetail = () => {
     if (!file) return;
     setLoading(true);
     try {
-      const zip = await JSZip.loadAsync(file);
-      const images = [];
-      const entries = Object.values(zip.files).filter(
-        (f) => !f.dir && /\.(png|jpg|jpeg|webp)$/i.test(f.name)
-      );
-      for (const entry of entries) {
-        const blob = await entry.async('base64');
-        images.push(`data:image/${entry.name.split('.').pop()};base64,${blob}`);
-      }
-      const merged = [...(resource.images || []), ...images];
+      const merged = await mergeImagesFromZip({
+        file,
+        currentImages: resource.images || []
+      });
       updateResourceImages(type, resourceId, merged);
     } catch (e) {
       alert('解压失败，请检 zip 文件');
@@ -398,7 +235,7 @@ const ResourceDetail = () => {
     if (!file) return;
     setLoading(true);
     try {
-      const zip = await JSZip.loadAsync(file);
+      const zip = await loadZip(file);
       const manifestEntry = Object.values(zip.files).find((f) => /character\.json$/i.test(f.name));
       if (!manifestEntry) {
         alert('未找到角色资源档案文件');
@@ -797,7 +634,7 @@ const ResourceDetail = () => {
     if (!file) return;
     setLoading(true);
     try {
-      const zip = await JSZip.loadAsync(file);
+      const zip = await loadZip(file);
       const metaFile = zip.file(`ExpressionForms/${resource.id}/meta.json`);
       if (!metaFile) {
         alert('未找到 meta.json');
@@ -949,13 +786,7 @@ const ResourceDetail = () => {
       meta,
       images: resource.images || []
     };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${resource.name || 'resource'}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadJson(`${resource.name || 'resource'}.json`, payload);
   };
 
   const handleBack = () => {
@@ -1049,22 +880,19 @@ const ResourceDetail = () => {
   const handleViewUpload = (viewAngle) => async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const { assets: currentAssets } = resolveFormViews();
-      const filtered = currentAssets.filter((asset) => asset.viewAngle !== viewAngle);
-      updateFormViews([
-        ...filtered,
-        {
-          id: createAssetId(),
-          viewAngle,
-          fileName: file.name,
-          src: reader.result,
-          uploadedAt: new Date().toISOString()
-        }
-      ]);
-    };
-    reader.readAsDataURL(file);
+    const src = await readFileAsDataUrl(file);
+    const { assets: currentAssets } = resolveFormViews();
+    const filtered = currentAssets.filter((asset) => asset.viewAngle !== viewAngle);
+    updateFormViews([
+      ...filtered,
+      {
+        id: createAssetId(),
+        viewAngle,
+        fileName: file.name,
+        src,
+        uploadedAt: new Date().toISOString()
+      }
+    ]);
   };
 
   const getCharacterFormOptions = (character) => {
@@ -1242,150 +1070,63 @@ const ResourceDetail = () => {
   });
   const characterStatus = getCharacterStatus();
   const hasCharacterMissing = characterStatus !== '已完成';
+  const sortedSceneVariants = sortSceneVariantsByMissing(sceneVariants);
 
-  const getSceneVariantRequirements = (variant) => {
-    const images = variant.images || [];
-    const requirements = variant.imageRequirements || images.map((img) => img.label);
-    return requirements.length ? requirements : images.map((img) => img.label);
-  };
-
-  const hasSceneVariantMissing = (variant) => {
-    const requirements = getSceneVariantRequirements(variant);
-    if (!requirements.length) return false;
-    return requirements.some((label) => !(variant.images || []).some((img) => img.label === label));
-  };
-
-  const sortedSceneVariants = [...sceneVariants].sort((a, b) => {
-    const aMissing = hasSceneVariantMissing(a);
-    const bMissing = hasSceneVariantMissing(b);
-    if (aMissing === bMissing) return 0;
-    return aMissing ? -1 : 1;
-  });
 
   const handleRelationshipImport = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const cleaned = text.replace(/^\uFEFF/, '').trim();
-      if (!cleaned) {
-        alert('关系网 JSON 为空');
-        return;
-      }
-      let parsed = JSON.parse(cleaned);
-      if (typeof parsed === 'string') {
-        parsed = JSON.parse(parsed);
-      }
-      if (currentNovel) {
-        updateNovel(currentNovel.id, { relationshipGraph: parsed });
-      } else {
-        setMeta((prev) => ({ ...prev, relationshipGraph: parsed }));
-      }
-    } catch (e) {
-      alert('关系网 JSON 解析失败');
-    }
+    await importRelationshipGraph({
+      file: event.target.files?.[0],
+      currentNovel,
+      updateNovel,
+      setMeta
+    });
   };
 
   const handleRelationshipExport = () => {
-    const graph = novelRelationshipGraph || relationGraph;
-    const blob = new Blob([JSON.stringify(graph, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${currentNovel?.title || resource.name || 'character'}-relationship.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    exportRelationshipGraph({
+      currentNovel,
+      resource,
+      relationGraph,
+      novelRelationshipGraph
+    });
   };
 
   const handleSceneRuleExport = () => {
-    const payload = {
-      scene: {
-        id: resource.id,
-        name: resource.name,
-        description,
-        tags: normalizeTags(),
-        meta: {
-          sceneLayout,
-          sceneDescription,
-          sceneElementDetails,
-          sceneVariants
-        }
-      },
-      rules: (data.rules || []).filter((rule) => rule.tool === '场景资源')
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${resource.name || 'scene'}-rule.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    exportSceneRule({
+      resource,
+      description,
+      normalizeTags,
+      sceneLayout,
+      sceneDescription,
+      sceneElementDetails,
+      sceneVariants,
+      data
+    });
   };
 
   const handleSceneRuleImport = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const cleaned = text.replace(/^\uFEFF/, '').trim();
-      if (!cleaned) {
-        alert('场景规则包为空');
-        return;
-      }
-      let parsed = JSON.parse(cleaned);
-      if (typeof parsed === 'string') {
-        parsed = JSON.parse(parsed);
-      }
-      const payload = parsed.scene || parsed;
-      setName(payload.name || resource.name || '');
-      setDescription(payload.description || '');
-      if (payload.tags) {
-        setTags((payload.tags || []).join(', '));
-      }
-      setMeta((prev) => ({
-        ...prev,
-        sceneLayout: payload.meta?.sceneLayout || payload.sceneLayout || prev.sceneLayout,
-        sceneDescription: payload.meta?.sceneDescription || payload.sceneDescription || prev.sceneDescription,
-        sceneElementDetails: payload.meta?.sceneElementDetails || payload.sceneElementDetails || prev.sceneElementDetails,
-        sceneVariants: payload.meta?.sceneVariants || payload.sceneVariants || prev.sceneVariants
-      }));
-    } catch (error) {
-      alert('场景规则包解析失败');
-    }
+    await importSceneRule({
+      file: event.target.files?.[0],
+      resource,
+      setName,
+      setDescription,
+      setTags,
+      setMeta
+    });
   };
 
   const handleGrowthHistoryImport = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const cleaned = text.replace(/^\uFEFF/, '').trim();
-      if (!cleaned) {
-        alert('成长史 JSON 为空');
-        return;
-      }
-      let parsed = JSON.parse(cleaned);
-      if (typeof parsed === 'string') {
-        parsed = JSON.parse(parsed);
-      }
-      const entries = Array.isArray(parsed) ? parsed : parsed.characterGrowthHistory || [];
-      setMeta((prev) => ({ ...prev, characterGrowthHistory: entries }));
-    } catch (e) {
-      alert('成长史 JSON 解析失败');
-    }
+    await importGrowthHistory({
+      file: event.target.files?.[0],
+      setMeta
+    });
   };
 
   const handleGrowthHistoryExport = () => {
-    const payload = {
-      characterGrowthHistory: growthHistory
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${resource.name || 'character'}-growth-history.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    exportGrowthHistory({
+      resource,
+      growthHistory
+    });
   };
 
   const handleOpenEdit = (section) => {
@@ -1661,24 +1402,12 @@ const ResourceDetail = () => {
     URL.revokeObjectURL(url);
   };
 
-  const getRelationByTarget = (node) => {
-    const relations = relationGraph.relations || [];
-    const centerKeys = [resource.id, resource.name].filter(Boolean).map((value) => String(value).toLowerCase());
-    const nodeKeys = [node?.id, node?.name].filter(Boolean).map((value) => String(value).toLowerCase());
-    const matches = (value, keys) => value && keys.includes(String(value).toLowerCase());
-    return relations.find((rel) => {
-      if (rel.targetId) {
-        return rel.targetId === node?.id || rel.targetId === node?.name;
-      }
-      const source = rel.source ?? rel.sourceId ?? rel.from ?? rel.fromId ?? rel.sourceName;
-      const target = rel.target ?? rel.targetId ?? rel.to ?? rel.toId ?? rel.targetName;
-      const isSourceCenter = matches(source, centerKeys);
-      const isTargetCenter = matches(target, centerKeys);
-      const isSourceNode = matches(source, nodeKeys);
-      const isTargetNode = matches(target, nodeKeys);
-      return (isSourceCenter && isTargetNode) || (isTargetCenter && isSourceNode);
+  const resolveRelationByTarget = (node) =>
+    getRelationByTarget({
+      relationGraph,
+      resource,
+      node
     });
-  };
 
   const renderCharacterDetail = () => (
     <div className="character-detail">
@@ -1713,526 +1442,93 @@ const ResourceDetail = () => {
       </div>
 
       {characterTab === 'base' && (
-        <div className="card-grid">
-          <div className="card section-card">
-            <div className="section-header">
-              <h3>基础信息</h3>
-              <button type="button" className="ghost-button" onClick={() => handleOpenEdit('base')}>
-                修改
-              </button>
-            </div>
-            <div className="info-grid">
-              <div>
-                <div className="label">角色名称</div>
-                <div className="readonly-field">{name || '未填写'}</div>
-              </div>
-              <div>
-                <div className="label">角色标签</div>
-                <div className="readonly-field">{normalizeTags().join('、') || '未填写'}</div>
-              </div>
-              <div className="span-2">
-                <div className="label">角色背景描述</div>
-                <div className="readonly-field">{resolveFormValue('persona') || '未填写'}</div>
-              </div>
-              <div className="span-2">
-                <div className="label">性格设定</div>
-                <div className="readonly-field multi-line">{meta.personalitySetting || '未填写'}</div>
-              </div>
-              <div className="span-2">
-                <div className="label">成长轨迹</div>
-                <div className="readonly-field multi-line">{meta.growthTrajectory || '未填写'}</div>
-              </div>
-              <div>
-                <div className="label">置顶角色</div>
-                <div className="readonly-field">{priorityPin ? '是' : '否'}</div>
-              </div>
-              <div>
-                <div className="label">当前状态</div>
-                <div className="readonly-field">{getCharacterStatus()}</div>
-              </div>
-            </div>
-          </div>
-          <div className="card section-card">
-            <h3>角色操作</h3>
-            <div className="muted">后续角色整体的操作按钮将集中在此处。</div>
-            <div className="action-hint">当前暂无更多可用操作。</div>
-          </div>
-        </div>
+        <CharacterBaseSection
+          name={name}
+          normalizeTags={normalizeTags}
+          resolveFormValue={resolveFormValue}
+          meta={meta}
+          priorityPin={priorityPin}
+          getCharacterStatus={getCharacterStatus}
+          handleOpenEdit={handleOpenEdit}
+        />
       )}
 
       {characterTab === 'appearance' && (
-        <div className="card-grid">
-          {forms.length > 1 && (
-            <div className="sub-tabs">
-              {forms.map((form) => (
-                <button
-                  key={form.name}
-                  type="button"
-                  className={activeFormName === form.name ? 'tab active' : 'tab'}
-                  onClick={() => setActiveFormName(form.name)}
-                >
-                  {form.name}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="card section-card">
-            <div className="section-header">
-              <h3>形态信息</h3>
-              <button type="button" className="ghost-button" onClick={() => handleOpenEdit('formInfo')}>
-                修改
-              </button>
-            </div>
-            <div className="info-stack">
-              <div>
-                <div className="label">人设</div>
-                <div className="readonly-field multi-line">{resolveFormValue('persona') || '未填写'}</div>
-              </div>
-              <div>
-                <div className="label">外貌描写（导出提示词）</div>
-                <div className="readonly-field multi-line">{resolveFormValue('appearance') || '未填写'}</div>
-              </div>
-            </div>
-          </div>
-          <div className="card section-card">
-            <div className="section-header">
-              <h3>参考人物</h3>
-              <button type="button" className="ghost-button" onClick={() => handleOpenEdit('references')}>
-                修改
-              </button>
-            </div>
-            <div className="reference-table">
-              <div className="reference-header">
-                <div>参考角色</div>
-                <div>参考目标</div>
-                <div>权重</div>
-              </div>
-              {characterReferences.length === 0 && <div className="empty">暂无参考人物记录。</div>}
-              {characterReferences.map((ref) => {
-                const character = data.resources.characters.find((item) => item.id === ref.characterId);
-                const formLabel = ref.formName || '默认形态';
-                const preview = resolveReferenceImage(character, formLabel);
-                return (
-                  <div key={ref.id} className="reference-row">
-                    <div className="reference-cell">
-                      <div className="reference-avatar">
-                        {preview ? <img src={preview} alt={character?.name || '参考角色'} /> : <div className="placeholder" />}
-                      </div>
-                      <div>
-                        <div className="reference-name">{character?.name || '未知角色'}</div>
-                        <div className="muted">{formLabel}</div>
-                      </div>
-                    </div>
-                    <div className="reference-cell">{ref.target || '未填写'}</div>
-                    <div className="reference-cell">{ref.weight ?? 0}%</div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-          <div className="card section-card">
-            <div className="section-header">
-              <h3>上传下载</h3>
-              <div className="resource-header-actions">
-                <label className="file-button">
-                  导入角色资源包
-                  <input type="file" accept="application/zip" onChange={handleCharacterImport} />
-                </label>
-                <button type="button" onClick={handleCharacterExport}>
-                  导出角色资源包
-                </button>
-              </div>
-            </div>
-            {viewList.length === 0 ? (
-              <div className="empty">暂无视需求，请等待分镜头AI回传。</div>
-            ) : (
-              <div className="portrait-grid">
-                {viewList.map((viewAngle) => {
-                  const asset = viewAssets.find((item) => item.viewAngle === viewAngle);
-                  return (
-                    <div key={viewAngle} className="portrait-card">
-                      <button
-                        type="button"
-                        className="portrait-preview"
-                        onClick={() => {
-                          if (asset?.src) {
-                            openPreview(asset.src, viewAngle);
-                          } else {
-                            viewInputRefs.current[viewAngle]?.click();
-                          }
-                        }}
-                      >
-                        {asset?.src ? <img src={asset.src} alt={viewAngle} /> : <div className="portrait-placeholder">暂无图片</div>}
-                      </button>
-                      <div className="portrait-meta">
-                        <span>{viewAngle}</span>
-                        <label className="file-button">
-                          上传
-                          <input
-                            type="file"
-                            accept="image/*"
-                            ref={(el) => {
-                              viewInputRefs.current[viewAngle] = el;
-                            }}
-                            onChange={handleViewUpload(viewAngle)}
-                          />
-                        </label>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
+        <CharacterAppearanceSection
+          forms={forms}
+          activeFormName={activeFormName}
+          setActiveFormName={setActiveFormName}
+          handleOpenEdit={handleOpenEdit}
+          resolveFormValue={resolveFormValue}
+          characterReferences={characterReferences}
+          data={data}
+          resolveReferenceImage={resolveReferenceImage}
+          handleCharacterImport={handleCharacterImport}
+          handleCharacterExport={handleCharacterExport}
+          viewList={viewList}
+          viewAssets={viewAssets}
+          openPreview={openPreview}
+          viewInputRefs={viewInputRefs}
+          handleViewUpload={handleViewUpload}
+        />
       )}
+
 
       {characterTab === 'relations' && (
-        <div className="card section-card">
-          <div className="section-header">
-            <h3>关系网</h3>
-            <div className="resource-header-actions">
-              <button type="button" className="ghost-button" onClick={handleRelationshipExport}>
-                导出关系网
-              </button>
-              <label className="file-button">
-                导入关系网
-                <input type="file" accept="application/json" onChange={handleRelationshipImport} />
-              </label>
-            </div>
-          </div>
-          <div className="relation-board">
-            {relationNodes.length ? (
-              <div className="relation-network">
-                <svg className="relation-lines" viewBox="0 0 100 100" preserveAspectRatio="none">
-                  {relationPositions.map((node) => (
-                    <line
-                      key={`line-${node.key}`}
-                      x1="50"
-                      y1="50"
-                      x2={node.position.x}
-                      y2={node.position.y}
-                    />
-                  ))}
-                </svg>
-                {relationPositions.map((node) => {
-                  const avatar = relationImageMap.get(node.id || node.name) || '';
-                  return (
-                    <button
-                      key={node.key}
-                      type="button"
-                      className="relation-node rich"
-                      style={{ left: `${node.position.x}%`, top: `${node.position.y}%` }}
-                      onClick={() => setFocusedRelation(node)}
-                    >
-                      <div className="relation-node-avatar">
-                        {avatar ? <img src={avatar} alt={node.name} /> : <div className="placeholder" />}
-                      </div>
-                      <div className="relation-node-name">{node.name}</div>
-                    </button>
-                  );
-                })}
-                <div className="relation-center rich">
-                  <div className="relation-node-avatar">
-                    {resolveReferenceImage(resource, resource.form?.[0]?.name || '默认形态') ? (
-                      <img
-                        src={resolveReferenceImage(resource, resource.form?.[0]?.name || '默认形态')}
-                        alt={resource.name}
-                      />
-                    ) : (
-                      <div className="placeholder" />
-                    )}
-                  </div>
-                  <div className="relation-node-name">{resource.name}</div>
-                </div>
-              </div>
-            ) : (
-              <div className="empty">暂无关系网数据，可导入 JSON 进行展示。</div>
-            )}
-          </div>
-          {focusedRelation && (
-            <div className="relation-focus">
-              <div className="relation-focus-node">{focusedRelation.name}</div>
-              {(() => {
-                const relationDetail = getRelationByTarget(focusedRelation);
-                return (
-                  <div className="relation-focus-card">
-                    <div className="label">
-                      {resource.name} ⇄ {focusedRelation.name}
-                    </div>
-                    <div className="muted">{relationDetail?.relation || '关系待补充'}</div>
-                    {(relationDetail?.emotions || []).map((emotion, idx) => (
-                      <div key={idx} className="muted">
-                        {emotion.label}：{emotion.value}
-                      </div>
-                    ))}
-                    {relationDetail?.currentEmotion && (
-                      <div className="muted">当下情绪：{relationDetail.currentEmotion}</div>
-                    )}
-                    {relationDetail?.cause && (
-                      <div className="muted">前因：{relationDetail.cause}</div>
-                    )}
-                    {relationDetail?.consequence && (
-                      <div className="muted">后果：{relationDetail.consequence}</div>
-                    )}
-                  </div>
-                );
-              })()}
-              <div className="relation-focus-node">{resource.name}</div>
-            </div>
-          )}
-        </div>
+        <CharacterRelationsSection
+          handleRelationshipExport={handleRelationshipExport}
+          handleRelationshipImport={handleRelationshipImport}
+          relationNodes={relationNodes}
+          relationPositions={relationPositions}
+          relationImageMap={relationImageMap}
+          setFocusedRelation={setFocusedRelation}
+          resolveReferenceImage={resolveReferenceImage}
+          resource={resource}
+          focusedRelation={focusedRelation}
+          resolveRelationByTarget={resolveRelationByTarget}
+        />
       )}
 
+
       {characterTab === 'growth' && (
-        <div className="card section-card">
-          <div className="section-header">
-            <h3>角色成长史</h3>
-            <div className="resource-header-actions">
-              <button type="button" className="ghost-button" onClick={handleGrowthHistoryExport}>
-                导出成长史
-              </button>
-              <label className="file-button">
-                导入成长史
-                <input type="file" accept="application/json" onChange={handleGrowthHistoryImport} />
-              </label>
-            </div>
-          </div>
-          {growthHistory.length ? (
-            <div className="growth-history-timeline">
-              {growthHistory.map((entry, index) => (
-                <div
-                  key={`${entry.chapter || 'chapter'}-${index}`}
-                  className={`growth-history-item ${index % 2 === 0 ? 'left' : 'right'}`}
-                >
-                  <div className="growth-history-node" />
-                  <div className="growth-history-timeline-card">
-                    <div className="label">{entry.chapter || '未标注章节'}</div>
-                    <div className="growth-history-change">{entry.change || '变化待补充'}</div>
-                    <div className="muted">{entry.description || '暂无描述'}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty">暂无成长史数据，可导入 JSON 进行展示。</div>
-          )}
-        </div>
+        <CharacterGrowthSection
+          growthHistory={growthHistory}
+          handleGrowthHistoryExport={handleGrowthHistoryExport}
+          handleGrowthHistoryImport={handleGrowthHistoryImport}
+        />
       )}
 
       {editingSection && (
-        <div className="modal">
-          <div className="modal-content">
-            <div className="modal-header">
-              <h3>编辑{editingSection === 'base' ? '基础信息' : editingSection === 'formInfo' ? '形态信息' : '参考人物'}</h3>
-            </div>
-            {editingSection === 'base' && (
-              <div className="form-grid cols-2">
-                <label>
-                  角色名称
-                  <input value={name} onChange={(e) => setName(e.target.value)} />
-                </label>
-                <label>
-                  角色标签（逗号分隔）
-                  <input value={tags} onChange={(e) => setTags(e.target.value)} />
-                </label>
-                <label className="span-2">
-                  角色背景描述
-                  <textarea
-                    value={resolveFormValue('persona')}
-                    onChange={(e) => updateFormValue('persona', e.target.value)}
-                    className="large-input"
-                  />
-                </label>
-                <label className="span-2">
-                  性格设定
-                  <textarea
-                    value={meta.personalitySetting || ''}
-                    onChange={(e) => setMeta((prev) => ({ ...prev, personalitySetting: e.target.value }))}
-                    className="large-input"
-                  />
-                </label>
-                <label className="span-2">
-                  成长轨迹
-                  <textarea
-                    value={meta.growthTrajectory || ''}
-                    onChange={(e) => setMeta((prev) => ({ ...prev, growthTrajectory: e.target.value }))}
-                    className="large-input"
-                  />
-                </label>
-                <label>
-                  置顶角色
-                  <select value={priorityPin ? 'yes' : 'no'} onChange={(e) => setPriorityPin(e.target.value === 'yes')}>
-                    <option value="no">否</option>
-                    <option value="yes">是</option>
-                  </select>
-                </label>
-              </div>
-            )}
-            {editingSection === 'formInfo' && (
-              <div className="form-grid cols-1">
-                <label>
-                  人设
-                  <textarea
-                    value={resolveFormValue('persona')}
-                    onChange={(e) => updateFormValue('persona', e.target.value)}
-                    className="large-input"
-                  />
-                </label>
-                <label>
-                  外貌描写（导出提示词）
-                  <textarea
-                    value={resolveFormValue('appearance')}
-                    onChange={(e) => updateFormValue('appearance', e.target.value)}
-                    className="large-input"
-                  />
-                </label>
-              </div>
-            )}
-            {editingSection === 'references' && (
-              <div className="reference-editor">
-                {draftReferences.length === 0 && <div className="empty">暂无参考人物，请添加。</div>}
-                {draftReferences.map((item, idx) => {
-                  const character = data.resources.characters.find((entry) => entry.id === item.characterId);
-                  const formOptions = getCharacterFormOptions(character);
-                  return (
-                    <div key={item.id || idx} className="reference-editor-row">
-                      <label>
-                        参考角色
-                        <select
-                          value={item.characterId || ''}
-                          onChange={(e) => {
-                            const next = [...draftReferences];
-                            next[idx].characterId = e.target.value;
-                            const targetCharacter = data.resources.characters.find(
-                              (entry) => entry.id === e.target.value
-                            );
-                            next[idx].formName = getCharacterFormOptions(targetCharacter)[0];
-                            setDraftReferences(next);
-                          }}
-                        >
-                          <option value="">请选择角色</option>
-                          {data.resources.characters.map((entry) => (
-                            <option key={entry.id} value={entry.id}>
-                              {entry.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        参考形态
-                        <select
-                          value={item.formName || formOptions[0]}
-                          onChange={(e) => {
-                            const next = [...draftReferences];
-                            next[idx].formName = e.target.value;
-                            setDraftReferences(next);
-                          }}
-                        >
-                          {formOptions.map((option) => (
-                            <option key={option} value={option}>
-                              {option}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        参考目标
-                        <input
-                          value={item.target || ''}
-                          onChange={(e) => {
-                            const next = [...draftReferences];
-                            next[idx].target = e.target.value;
-                            setDraftReferences(next);
-                          }}
-                        />
-                      </label>
-                      <label>
-                        权重值
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          value={item.weight ?? 50}
-                          onChange={(e) => {
-                            const next = [...draftReferences];
-                            next[idx].weight = Number(e.target.value);
-                            setDraftReferences(next);
-                          }}
-                        />
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
-                          value={item.weight ?? 50}
-                          onChange={(e) => {
-                            const next = [...draftReferences];
-                            next[idx].weight = Number(e.target.value);
-                            setDraftReferences(next);
-                          }}
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        className="danger"
-                        onClick={() => setDraftReferences((prev) => prev.filter((_, refIdx) => refIdx !== idx))}
-                      >
-                        删除
-                      </button>
-                    </div>
-                  );
-                })}
-                <button
-                  type="button"
-                  onClick={() =>
-                    setDraftReferences((prev) => [
-                      ...prev,
-                      { id: createAssetId(), characterId: '', formName: '', target: '', weight: 50 }
-                    ])
-                  }
-                >
-                  添加参考人物
-                </button>
-              </div>
-            )}
-            <div className="modal-actions">
-              <button type="button" className="ghost-button" onClick={handleCloseEdit}>
-                取消
-              </button>
-              <button type="button" onClick={handleSaveEdit}>
-                确认
-              </button>
-            </div>
-          </div>
-        </div>
+        <CharacterEditModalSection
+          editingSection={editingSection}
+          name={name}
+          setName={setName}
+          tags={tags}
+          setTags={setTags}
+          resolveFormValue={resolveFormValue}
+          updateFormValue={updateFormValue}
+          meta={meta}
+          setMeta={setMeta}
+          priorityPin={priorityPin}
+          setPriorityPin={setPriorityPin}
+          draftReferences={draftReferences}
+          data={data}
+          getCharacterFormOptions={getCharacterFormOptions}
+          setDraftReferences={setDraftReferences}
+          createAssetId={createAssetId}
+          handleCloseEdit={handleCloseEdit}
+          handleSaveEdit={handleSaveEdit}
+        />
       )}
 
-      {previewImage && (
-        <div className="modal" onClick={closePreview}>
-          <div className="modal-content image-preview" onClick={(e) => e.stopPropagation()}>
-            <div className="section-header">
-              <h3>{previewLabel || '图片预览'}</h3>
-              <button type="button" className="tab" onClick={closePreview}>
-                关闭
-              </button>
-            </div>
-            <div className="image-preview-body">
-              <img src={previewImage} alt={previewLabel || '预览图'} />
-            </div>
-          </div>
-        </div>
-      )}
 
-      <div className="resource-footer">
-        <div className="resource-footer-actions">
-          <button type="button" className="ghost-button" onClick={handleBack}>
-            返回列表
-          </button>
-          <button type="button" onClick={handleSaveMeta}>
-            保存并返回
-          </button>
-        </div>
-      </div>
+      <CharacterPreviewFooterSection
+        previewImage={previewImage}
+        previewLabel={previewLabel}
+        closePreview={closePreview}
+        handleBack={handleBack}
+        handleSaveMeta={handleSaveMeta}
+      />
     </div>
   );
 
@@ -2241,704 +1537,98 @@ const ResourceDetail = () => {
       {type === 'characters' && renderCharacterDetail()}
       {type !== 'characters' && (
         <div className="card">
-          <div className="resource-header">
-            <div className="resource-title">
-              {isEditingTitle ? (
-                <div className="title-edit">
-                  <input
-                    value={draftTitle}
-                    onChange={(e) => setDraftTitle(e.target.value)}
-                    placeholder="资源名称"
-                  />
-                  <button
-                    type="button"
-                    className="text-link"
-                    onClick={() => {
-                      setName(draftTitle.trim());
-                      setIsEditingTitle(false);
-                    }}
-                  >
-                    保存
-                  </button>
-                  <button
-                    type="button"
-                    className="text-link"
-                    onClick={() => {
-                      setDraftTitle(name);
-                      setIsEditingTitle(false);
-                    }}
-                  >
-                    取消
-                  </button>
-                </div>
-              ) : (
-                <div className="title-row">
-                  <h2>{typeLabels[type]} - {resource.name}</h2>
-                  <button type="button" className="text-link" onClick={() => setIsEditingTitle(true)}>
-                    修改
-                  </button>
-                </div>
-              )}
-            </div>
-            <div className="resource-header-actions">
-              <button type="button" className="ghost-button" onClick={handleBack}>
-                返回列表
-              </button>
-            </div>
-          </div>
+          <NonCharacterHeaderSection
+            isEditingTitle={isEditingTitle}
+            draftTitle={draftTitle}
+            setDraftTitle={setDraftTitle}
+            setName={setName}
+            setIsEditingTitle={setIsEditingTitle}
+            name={name}
+            typeLabels={typeLabels}
+            type={type}
+            resource={resource}
+            handleBack={handleBack}
+          />
           {type === 'scenes' && (
-            <div className="stack">
-              <div className="resource-tabs">
-                {[
-                  { key: 'structure', label: '场景结构图展示' },
-                  { key: 'images', label: '图片管理' }
-                ].map((tab) => (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    className={sceneTab === tab.key ? 'tab active' : 'tab'}
-                    onClick={() => setSceneTab(tab.key)}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-              <div className="card section-card">
-                <div className="section-header">
-                  <h3>场景规则库</h3>
-                  <div className="resource-header-actions">
-                    <button type="button" className="ghost-button" onClick={handleSceneRuleExport}>
-                      下载场景规则包
-                    </button>
-                    <label className="file-button">
-                      上传场景资源包
-                      <input type="file" accept="application/json" onChange={handleSceneRuleImport} />
-                    </label>
-                  </div>
-                </div>
-                <div className="muted">导入/导出场景结构、画面描述与规则信息。</div>
-              </div>
-              {sceneTab === 'structure' && (
-                <div className="card section-card">
-                  <div className="section-header">
-                    <h3>场景结构图展示</h3>
-                    <button type="button" className="ghost-button" onClick={() => handleSceneEditOpen('structure')}>
-                      修改
-                    </button>
-                  </div>
-                  <div className="scene-preview scene-readonly">
-                    <div className="scene-preview-header">结构图展示</div>
-                    <div className="scene-canvas scene-canvas-grid">
-                      {sceneLayout.elements.length === 0 && (
-                        <div className="empty">暂无结构图元素，等待分镜AI回传。</div>
-                      )}
-                      {sceneLayout.elements.map((element, index) => {
-                        const left = `${(element.x || 0) * 100}%`;
-                        const top = `${(element.y || 0) * 100}%`;
-                        if (element.type === 'character') {
-                          return (
-                            <div
-                              key={element.id || `${element.name}-${left}-${index}`}
-                              className="scene-node character-node"
-                              style={{ left, top, transform: `translate(-50%, -50%) rotate(${element.direction || 0}deg)` }}
-                            >
-                              <span>{element.name}</span>
-                            </div>
-                          );
-                        }
-                        return (
-                          <div
-                            key={element.id || `${element.name}-${left}-${index}`}
-                            className="scene-node"
-                            style={{ left, top }}
-                          >
-                            {element.name}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <div className="scene-description">
-                    <div className="section-header">
-                      <h3>画面描述</h3>
-                      <button type="button" className="ghost-button" onClick={() => handleSceneEditOpen('description')}>
-                        修改
-                      </button>
-                    </div>
-                    <div className="info-stack">
-                      <div>
-                        <div className="label">场景整体描述</div>
-                        <div className="readonly-field multi-line">{sceneDescription || '未填写'}</div>
-                      </div>
-                      <div>
-                        <div className="label">元素详述</div>
-                        {sceneElementDetails.length === 0 && <div className="empty">暂无元素详述。</div>}
-                        {sceneElementDetails.map((detail, idx) => (
-                          <div key={idx} className="readonly-field multi-line scene-detail-card">
-                            <strong>{detail.element}</strong>
-                            <div>{detail.detail}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-              {sceneTab === 'images' && (
-                <div className="stack">
-                  {sceneVariants.length === 0 && (
-                    <div className="card section-card">
-                      <div className="empty">暂无场景版本，请等待分镜头AI回传需求。</div>
-                    </div>
-                  )}
-                  {sortedSceneVariants.map((variant, variantIndex) => {
-                    const titleParts = [
-                      variant.name || resource.name || '场景',
-                      variant.season,
-                      variant.weather,
-                      variant.time
-                    ].filter(Boolean);
-                    const images = variant.images || [];
-                    const displayCards = getSceneVariantRequirements(variant);
-                    const variantMissing = hasSceneVariantMissing(variant);
-                    const variantKey = variant.id || `${variant.name || 'variant'}-${variantIndex}`;
-                    return (
-                      <div key={variantKey} className={`card section-card ${variantMissing ? 'variant-missing' : ''}`}>
-                        <div className="section-header">
-                          <h3>
-                            {titleParts.join('-')}
-                            {variantMissing && <span className="status-dot" />}
-                          </h3>
-                          <button type="button" className="ghost-button" onClick={() => handleSceneEditOpen('variants')}>
-                            修改
-                          </button>
-                        </div>
-                        <div className="scene-variant-grid">
-                          {displayCards.length === 0 && <div className="empty">暂无图片需求。</div>}
-                          {displayCards.map((label) => {
-                            const image = images.find((img) => img.label === label);
-                            const refKey = `${variant.id}-${label}`;
-                            return (
-                              <div key={`${variant.id}-${label}`} className="scene-variant-card">
-                                <button
-                                  type="button"
-                                  className="scene-variant-preview"
-                                  onClick={() => {
-                                    if (image?.src) {
-                                      openPreview(image.src, label);
-                                    } else {
-                                      sceneInputRefs.current[refKey]?.click();
-                                    }
-                                  }}
-                                >
-                                  {image?.src ? <img src={image.src} alt={label} /> : <div className="placeholder">暂无图片</div>}
-                                </button>
-                                <div className="scene-variant-meta">
-                                  <span>{label}</span>
-                                  <label className="file-button">
-                                    上传
-                                    <input
-                                      type="file"
-                                      accept="image/*"
-                                      ref={(el) => {
-                                        sceneInputRefs.current[refKey] = el;
-                                      }}
-                                      onChange={handleSceneVariantImageUpload(variant.id, label)}
-                                    />
-                                  </label>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                        <div className="row align-right">
-                          <button type="button" onClick={() => handleSceneVariantExport(variant)}>
-                            下载
-                          </button>
-                          <label className="file-button">
-                            上传
-                            <input
-                              type="file"
-                              accept="image/*,.zip,application/zip,application/x-zip-compressed"
-                              multiple
-                              onChange={handleSceneVariantBatchUpload(variant.id, displayCards)}
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            <SceneSection
+              sceneTab={sceneTab}
+              setSceneTab={setSceneTab}
+              handleSceneRuleExport={handleSceneRuleExport}
+              handleSceneRuleImport={handleSceneRuleImport}
+              handleSceneEditOpen={handleSceneEditOpen}
+              sceneLayout={sceneLayout}
+              sceneDescription={sceneDescription}
+              sceneElementDetails={sceneElementDetails}
+              sceneVariants={sceneVariants}
+              sortedSceneVariants={sortedSceneVariants}
+              resource={resource}
+              getSceneVariantRequirements={getSceneVariantRequirements}
+              hasSceneVariantMissing={hasSceneVariantMissing}
+              openPreview={openPreview}
+              sceneInputRefs={sceneInputRefs}
+              handleSceneVariantImageUpload={handleSceneVariantImageUpload}
+              handleSceneVariantExport={handleSceneVariantExport}
+              handleSceneVariantBatchUpload={handleSceneVariantBatchUpload}
+            />
           )}
+
           {sceneEditingSection && type === 'scenes' && (
-            <div className="modal">
-              <div className="modal-content">
-                <div className="modal-header">
-                  <h3>
-                    编辑
-                    {sceneEditingSection === 'structure'
-                      ? '场景结构图'
-                      : sceneEditingSection === 'description'
-                        ? '画面描述'
-                        : '场景版本'}
-                  </h3>
-                </div>
-                {sceneEditingSection === 'structure' && (
-                  <label>
-                    场景结构 JSON
-                    <textarea
-                      className="large-input"
-                      value={JSON.stringify(sceneDraft.sceneLayout || { elements: [] }, null, 2)}
-                      onChange={(e) => {
-                        try {
-                          const parsed = JSON.parse(e.target.value || '{}');
-                          setSceneDraft((prev) => ({ ...prev, sceneLayout: parsed }));
-                        } catch (err) {
-                          setSceneDraft((prev) => ({ ...prev, sceneLayout: prev.sceneLayout }));
-                        }
-                      }}
-                    />
-                  </label>
-                )}
-                {sceneEditingSection === 'description' && (
-                  <div className="form-grid cols-1">
-                    <label>
-                      场景整体描述
-                      <textarea
-                        className="large-input"
-                        value={sceneDraft.sceneDescription || ''}
-                        onChange={(e) => setSceneDraft((prev) => ({ ...prev, sceneDescription: e.target.value }))}
-                      />
-                    </label>
-                    <label>
-                      元素详述 JSON（数组）
-                      <textarea
-                        className="large-input"
-                        value={JSON.stringify(sceneDraft.sceneElementDetails || [], null, 2)}
-                        onChange={(e) => {
-                          try {
-                            const parsed = JSON.parse(e.target.value || '[]');
-                            setSceneDraft((prev) => ({ ...prev, sceneElementDetails: parsed }));
-                          } catch (err) {
-                            setSceneDraft((prev) => ({ ...prev }));
-                          }
-                        }}
-                      />
-                    </label>
-                  </div>
-                )}
-                {sceneEditingSection === 'variants' && (
-                  <label>
-                    场景版本 JSON（数组）
-                    <textarea
-                      className="large-input"
-                      value={JSON.stringify(sceneDraft.sceneVariants || [], null, 2)}
-                      onChange={(e) => {
-                        try {
-                          const parsed = JSON.parse(e.target.value || '[]');
-                          setSceneDraft((prev) => ({ ...prev, sceneVariants: parsed }));
-                        } catch (err) {
-                          setSceneDraft((prev) => ({ ...prev }));
-                        }
-                      }}
-                    />
-                  </label>
-                )}
-                <div className="modal-actions">
-                  <button type="button" className="ghost-button" onClick={handleSceneEditClose}>
-                    取消
-                  </button>
-                  <button type="button" onClick={handleSceneEditSave}>
-                    确认
-                  </button>
-                </div>
-              </div>
-            </div>
+            <SceneEditModalSection
+              sceneEditingSection={sceneEditingSection}
+              sceneDraft={sceneDraft}
+              setSceneDraft={setSceneDraft}
+              handleSceneEditClose={handleSceneEditClose}
+              handleSceneEditSave={handleSceneEditSave}
+            />
           )}
+
           {type === 'expressions' && (
-            <div className="stack">
-              <div className="tabs">
-                {expressionTabs.map((tab) => (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    className={expressionTab === tab.key ? 'tab active' : 'tab'}
-                    onClick={() => setExpressionTab(tab.key)}
-                  >
-                    {tab.label}
-                    {tab.key === 'transfer' && expressionStatus !== '已完成' && <span className="tab-dot" />}
-                  </button>
-                ))}
-              </div>
-              {expressionTab === 'base' && (
-                <div className="stack">
-                  <div className="expression-base-layout">
-                    <div className="stack">
-                      <div className="row">
-                        <label>
-                          情绪类型
-                          <input
-                            value={meta.emotionType || ''}
-                            onChange={(e) => setMeta((prev) => ({ ...prev, emotionType: e.target.value }))}
-                            placeholder="如：开心、愤怒"
-                          />
-                        </label>
-                        <label>
-                          情绪值
-                          <input
-                            value={meta.emotionValue || ''}
-                            onChange={(e) => setMeta((prev) => ({ ...prev, emotionValue: e.target.value }))}
-                            placeholder="如：80%"
-                          />
-                        </label>
-                        <label>
-                          匹配背景
-                          <input
-                            value={meta.background || ''}
-                            onChange={(e) => setMeta((prev) => ({ ...prev, background: e.target.value }))}
-                            placeholder="适用场景/背景"
-                          />
-                        </label>
-                      </div>
-                      <div className="row">
-                        <label>
-                          表情分类
-                          <input
-                            value={meta.category || ''}
-                            onChange={(e) => setMeta((prev) => ({ ...prev, category: e.target.value }))}
-                            placeholder="如：情绪爆发类"
-                          />
-                        </label>
-                        <label>
-                          适用范围
-                          <select
-                            value={meta.scope || ''}
-                            onChange={(e) => setMeta((prev) => ({ ...prev, scope: e.target.value }))}
-                          >
-                            {scopeOptions.map((opt) => (
-                              <option key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          风险等级
-                          <select
-                            value={meta.riskLevel || ''}
-                            onChange={(e) => setMeta((prev) => ({ ...prev, riskLevel: e.target.value }))}
-                          >
-                            {riskOptions.map((opt) => (
-                              <option key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          生图策略
-                          <select
-                            value={meta.strategy || ''}
-                            onChange={(e) => setMeta((prev) => ({ ...prev, strategy: e.target.value }))}
-                          >
-                            <option value="">选择策略</option>
-                            {strategyOptions.map((opt) => (
-                              <option key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      </div>
-                      <label>
-                        表情描述
-                        <textarea
-                          value={description}
-                          onChange={(e) => setDescription(e.target.value)}
-                          className="large-input"
-                          placeholder="描述表情的适用场景与表现重点。"
-                        />
-                      </label>
-                      <div className="row">
-                        <label>
-                          模板动漫来源
-                          <input
-                            value={meta.templateAnime || ''}
-                            onChange={(e) => setMeta((prev) => ({ ...prev, templateAnime: e.target.value }))}
-                          />
-                        </label>
-                        <label>
-                          模板角色
-                          <input
-                            value={meta.templateCharacter || ''}
-                            onChange={(e) => setMeta((prev) => ({ ...prev, templateCharacter: e.target.value }))}
-                          />
-                        </label>
-                        <label>
-                          模板表情描述
-                          <input
-                            value={meta.templateExpression || ''}
-                            onChange={(e) => setMeta((prev) => ({ ...prev, templateExpression: e.target.value }))}
-                          />
-                        </label>
-                      </div>
-                      <div className="row">
-                        <label>
-                          表情卡片归纳方式
-                          <select
-                            value={expressionGrouping}
-                            onChange={(e) => setMeta((prev) => ({ ...prev, expressionGrouping: e.target.value }))}
-                          >
-                            <option value="group">多个情绪值合并一张卡片</option>
-                            <option value="split">每个情绪值独立卡片</option>
-                          </select>
-                        </label>
-                        <label>
-                          推荐镜头（逗号分隔）
-                          <input
-                            value={(meta.shotRecommendation || []).join(', ')}
-                            onChange={(e) =>
-                              setMeta((prev) => ({
-                                ...prev,
-                                shotRecommendation: e.target.value
-                                  .split(',')
-                                  .map((item) => item.trim())
-                                  .filter(Boolean)
-                              }))
-                            }
-                            placeholder="closeup, medium"
-                          />
-                        </label>
-                        <label>
-                          禁止事项
-                          <input
-                            value={meta.prohibitions || ''}
-                            onChange={(e) => setMeta((prev) => ({ ...prev, prohibitions: e.target.value }))}
-                          />
-                        </label>
-                      </div>
-                    </div>
-                    <div className="expression-preview-panel">
-                      {expressionPreviewImage ? (
-                        <img src={expressionPreviewImage} alt="颜艺示例" className="expression-preview-image" />
-                      ) : (
-                        <div className="expression-preview-placeholder">暂无示例图</div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="card subtle">
-                    <h3>分镜推荐用法</h3>
-                    <textarea
-                      className="large-input"
-                      readOnly
-                      value={`使用场景：${description || ''}\n镜头建议：${(meta.shotRecommendation || []).join(' / ') || '特写'}\n用词建议：眼睛爆裂、牙关紧咬、额头青筋\n组合建议：可搭配汗滴/阴影遮眼特效，但不要叠加另一种颜艺`}
-                    />
-                    <button type="button" onClick={() => navigator.clipboard.writeText(resource.id)}>
-                      复制模板
-                    </button>
-                  </div>
-                  <div className="row align-right">
-                    <div className="status-chip">当前状态：{expressionStatus}</div>
-                    <button type="button" onClick={handleUpdateMeta}>
-                      更新表情信息
-                    </button>
-                  </div>
-                </div>
-              )}
-              {expressionTab === 'assets' && (
-                <div className="expression-asset-layout">
-                  <div className="card subtle expression-rule-panel">
-                    <div className="section-header">
-                      <h3>规则说明</h3>
-                      <label className="file-button">
-                        上传规则
-                        <input type="file" accept=".txt" onChange={handleExpressionRuleUpload} />
-                      </label>
-                    </div>
-                    <textarea
-                      value={expressionRuleText}
-                      onChange={(e) => setExpressionRuleText(e.target.value)}
-                      className="large-input"
-                      placeholder="请在此填写颜艺生成规则（自然语言描述即可）。"
-                    />
-                    <div className="row align-right">
-                      <button type="button" onClick={handleExpressionRuleSave}>
-                        保存规则
-                      </button>
-                    </div>
-                  </div>
-                  <div className="card subtle expression-image-panel">
-                    <h3>主参考图</h3>
-                    {mainExpressionAsset?.src ? (
-                      <img src={mainExpressionAsset.src} alt="主参考" className="expression-main-image" />
-                    ) : (
-                      <div className="expression-main-placeholder">请上传主参考图</div>
-                    )}
-                    <label className="file-button">
-                      上传主图
-                      <input type="file" accept="image/*" onChange={handleExpressionAssetUpload('main')} />
-                    </label>
-                  </div>
-                </div>
-              )}
-              {expressionTab === 'transfer' && (
-                <div className="stack">
-                  <div className="row card-actions">
-                    <div className="row">
-                      <input
-                        value={transferQuery}
-                        onChange={(e) => setTransferQuery(e.target.value)}
-                        placeholder="搜索角色或表情"
-                      />
-                    </div>
-                  </div>
-                  <div className="expression-transfer-grid">
-                    {expressionTransferRequests.length === 0 && (
-                      <div className="empty">暂无生图包需求卡片。</div>
-                    )}
-                    {expressionTransferRequests.map((item) => (
-                      <div key={item.id} className="expression-transfer-card">
-                        {(() => {
-                          const previewSrc = item.image || item.cover || '';
-                          return (
-                            <>
-                        <button
-                          type="button"
-                          className="expression-transfer-preview"
-                          onClick={() => {
-                            if (previewSrc) {
-                              openPreview(previewSrc, item.name || '表情需求');
-                            } else {
-                              expressionTransferRefs.current[item.id]?.click();
-                            }
-                          }}
-                        >
-                          {previewSrc ? (
-                            <img src={previewSrc} alt={item.name || '生图包'} />
-                          ) : (
-                            <div className="expression-transfer-placeholder">待生成</div>
-                          )}
-                          {!previewSrc && <span className="status-dot" />}
-                        </button>
-                        <div className="expression-transfer-title">{item.name || '颜艺生图包'}</div>
-                        <div className="expression-transfer-meta">{item.character || '未指定角色'}</div>
-                        <div className="row">
-                          <label className="file-button">
-                            上传
-                            <input
-                              type="file"
-                              accept="image/*"
-                              ref={(el) => {
-                                expressionTransferRefs.current[item.id] = el;
-                              }}
-                              onChange={handleExpressionTransferUpload(item.id)}
-                            />
-                          </label>
-                          <button type="button" onClick={() => handleExpressionTransferDownload(item)} disabled={!previewSrc}>
-                            下载
-                          </button>
-                        </div>
-                            </>
-                          );
-                        })()}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <div className="muted">当前状态：{expressionStatus}</div>
-            </div>
+            <ExpressionSection
+              expressionTabs={expressionTabs}
+              expressionTab={expressionTab}
+              setExpressionTab={setExpressionTab}
+              expressionStatus={expressionStatus}
+              meta={meta}
+              setMeta={setMeta}
+              scopeOptions={scopeOptions}
+              riskOptions={riskOptions}
+              strategyOptions={strategyOptions}
+              description={description}
+              setDescription={setDescription}
+              expressionPreviewImage={expressionPreviewImage}
+              resource={resource}
+              handleUpdateMeta={handleUpdateMeta}
+              handleExpressionRuleUpload={handleExpressionRuleUpload}
+              expressionRuleText={expressionRuleText}
+              setExpressionRuleText={setExpressionRuleText}
+              handleExpressionRuleSave={handleExpressionRuleSave}
+              mainExpressionAsset={mainExpressionAsset}
+              handleExpressionAssetUpload={handleExpressionAssetUpload}
+              transferQuery={transferQuery}
+              setTransferQuery={setTransferQuery}
+              expressionTransferRequests={expressionTransferRequests}
+              openPreview={openPreview}
+              expressionTransferRefs={expressionTransferRefs}
+              handleExpressionTransferUpload={handleExpressionTransferUpload}
+              handleExpressionTransferDownload={handleExpressionTransferDownload}
+            />
           )}
+
           {type === 'props' && (
-            <div className="stack">
-              <div className="card section-card">
-                <div className="section-header">
-                  <h3>道具描述</h3>
-                </div>
-                <textarea
-                  className="large-input"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="补充道具外观、材质、用途等"
-                />
-              </div>
-              <div className="card section-card">
-                <div className="section-header">
-                  <h3>图片管理</h3>
-                </div>
-                {propVariants.length === 0 && <div className="empty">暂无需求，请等待分镜头AI回传。</div>}
-                {propVariants.map((variant) => {
-                  const displayCards = getPropVariantRequirements(variant);
-                  const images = variant.images || [];
-                  return (
-                    <div key={variant.id} className="stack">
-                      <div className="section-header">
-                        <h4>{variant.name || resource.name || '道具'}</h4>
-                      </div>
-                      <div className="scene-variant-grid compact-grid">
-                        {displayCards.length === 0 && <div className="empty">暂无图片需求。</div>}
-                        {displayCards.map((label) => {
-                          const image = images.find((img) => img.label === label);
-                          const refKey = `${variant.id}-${label}-prop`;
-                          return (
-                            <div key={refKey} className="scene-variant-card compact-card">
-                              <button
-                                type="button"
-                                className="scene-variant-preview"
-                                onClick={() => {
-                                  if (image?.src) {
-                                    openPreview(image.src, label);
-                                  } else {
-                                    sceneInputRefs.current[refKey]?.click();
-                                  }
-                                }}
-                              >
-                                {image?.src ? (
-                                  <img src={image.src} alt={label} />
-                                ) : (
-                                  <div className="placeholder">暂无图片</div>
-                                )}
-                              </button>
-                              <div className="scene-variant-meta">
-                                <span>{label}</span>
-                                <label className="file-button">
-                                  上传
-                                  <input
-                                    type="file"
-                                    accept="image/*"
-                                    ref={(el) => {
-                                      sceneInputRefs.current[refKey] = el;
-                                    }}
-                                    onChange={handlePropVariantImageUpload(variant.id, label)}
-                                  />
-                                </label>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <div className="row align-right">
-                        <button type="button" onClick={() => handlePropVariantExport(variant)}>
-                          下载
-                        </button>
-                        <label className="file-button">
-                          上传
-                          <input
-                            type="file"
-                            accept="image/*,.zip,application/zip,application/x-zip-compressed"
-                            multiple
-                            onChange={handlePropVariantBatchUpload(variant.id, displayCards)}
-                          />
-                        </label>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            <PropSection
+              description={description}
+              setDescription={setDescription}
+              propVariants={propVariants}
+              getPropVariantRequirements={getPropVariantRequirements}
+              resource={resource}
+              openPreview={openPreview}
+              sceneInputRefs={sceneInputRefs}
+              handlePropVariantImageUpload={handlePropVariantImageUpload}
+              handlePropVariantExport={handlePropVariantExport}
+              handlePropVariantBatchUpload={handlePropVariantBatchUpload}
+            />
           )}
+
           {type !== 'characters' && type !== 'scenes' && type !== 'expressions' && type !== 'props' && (
             <div className="row">
               <div>
@@ -2957,35 +1647,6 @@ const ResourceDetail = () => {
               标签（逗号分隔）
               <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="角色, 主角" />
             </label>
-          )}
-          {loading && <div className="muted">正在处理...</div>}
-          {type === 'expressions' && (
-            <div className="card subtle">
-              <h3>表情历史记录</h3>
-              <div className="row">
-                <input
-                  placeholder="搜索角色或表情"
-                  value={historyQuery}
-                  onChange={(e) => setHistoryQuery(e.target.value)}
-                />
-                <span className="muted">同表情在不同角色间的复用记录</span>
-              </div>
-              <div className="list">
-                {expressionHistory.map((item, idx) => (
-                  <div key={idx} className="list-item">
-                    <div>
-                      <div className="list-title">{item.name || '表情'}</div>
-                      <div className="muted">角色：{item.character || '未知'}</div>
-                      <div className="muted">情绪值：{item.value || '-'}</div>
-                    </div>
-                    <button type="button" onClick={handleDownload}>
-                      下载更新规则
-                    </button>
-                  </div>
-                ))}
-                {expressionHistory.length === 0 && <div className="empty">暂无历史记录。</div>}
-              </div>
-            </div>
           )}
           {type !== 'characters' && type !== 'scenes' && type !== 'expressions' && (
             <div className="grid">
@@ -3019,10 +1680,18 @@ const ResourceDetail = () => {
               {(resource.images || []).length === 0 && <div className="empty">暂无图片，上传 zip 或补充图片。</div>}
             </div>
           )}
-          <div className="row align-right">
-            <button onClick={handleSaveMeta}>保存信息并返回资源库</button>
+
+
+          <NonCharacterFooterMetaSection
+            loading={loading}
+            type={type}
+            historyQuery={historyQuery}
+            setHistoryQuery={setHistoryQuery}
+            expressionHistory={expressionHistory}
+            handleDownload={handleDownload}
+            handleSaveMeta={handleSaveMeta}
+          />
           </div>
-        </div>
       )}
     </div>
   );

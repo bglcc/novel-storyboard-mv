@@ -3,15 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import ResourceCard from '../components/resources/ResourceCard';
 import ResourceHeader from '../components/resources/ResourceHeader';
 import ResourceTabs from '../components/resources/ResourceTabs';
+import { RESOURCE_CATEGORY_TABS } from '../config/resourceCategories';
 import { useData } from '../context/DataContext';
 import '../styles/resource.css';
-
-const tabs = [
-  { key: 'characters', label: '角色' },
-  { key: 'scenes', label: '场景' },
-  { key: 'props', label: '道具' },
-  { key: 'expressions', label: '表情' }
-];
 
 const parseLenientJson = (text) => {
   const cleaned = text.replace(/^\uFEFF/, '').trim();
@@ -27,44 +21,59 @@ const pickCoverImage = (resource) => {
   return '';
 };
 
+const normalizeSearchToken = (value) =>
+  String(value || '')
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, '');
+
 const ResourceLibrary = () => {
   const navigate = useNavigate();
   const { data, upsertResource, deleteResource } = useData();
   const characterImportRef = useRef(null);
-  const [activeTab, setActiveTab] = useState('characters');
+
+  const tabs = RESOURCE_CATEGORY_TABS;
+  const [activeTab, setActiveTab] = useState(tabs[0]?.key || 'characters');
   const [showMissing, setShowMissing] = useState(false);
   const [tagFilter, setTagFilter] = useState('');
 
+  const activeTabLabel = tabs.find((tab) => tab.key === activeTab)?.label || '资源';
+
   const hasMissingByTab = useMemo(() => {
-    const result = {};
-    tabs.forEach((tab) => {
-      result[tab.key] = (data.resources[tab.key] || []).some((item) => (item.status || '待补齐') !== '已完成');
-    });
-    return result;
-  }, [data.resources]);
+    return tabs.reduce((acc, tab) => {
+      acc[tab.key] = (data.resources?.[tab.key] || []).some((item) => (item.status || '待补齐') !== '已完成');
+      return acc;
+    }, {});
+  }, [data.resources, tabs]);
 
   const filteredResources = useMemo(() => {
     const keywordList = tagFilter
       .split(',')
-      .map((part) => part.trim())
+      .map((part) => normalizeSearchToken(part))
       .filter(Boolean);
 
-    return (data.resources[activeTab] || []).filter((item) => {
-      if (showMissing && (item.status || '待补齐') === '已完成') return false;
+    return (data.resources?.[activeTab] || []).filter((item) => {
+      const status = item.status || '待补齐';
+      if (showMissing && status === '已完成') return false;
       if (keywordList.length === 0) return true;
-      const tagText = (item.tags || []).join(' ').toLowerCase();
-      return keywordList.every((keyword) => tagText.includes(keyword.toLowerCase()));
+
+      const textBucket = [item.name || '', ...(item.tags || []), item.description || '']
+        .map((entry) => normalizeSearchToken(entry))
+        .join(' ');
+
+      return keywordList.every((keyword) => textBucket.includes(keyword));
     });
   }, [activeTab, data.resources, showMissing, tagFilter]);
 
   const handleImportCharactersJson = async (file) => {
     if (!file) return;
+
     try {
       const text = await file.text();
       const parsed = parseLenientJson(text);
       const candidates = Array.isArray(parsed)
         ? parsed
         : parsed?.characters || parsed?.resources?.characters || [];
+
       if (!Array.isArray(candidates) || candidates.length === 0) {
         alert('未识别到角色数组，请检查 JSON 结构。');
         return;
@@ -73,6 +82,7 @@ const ResourceLibrary = () => {
       candidates.forEach((item) => {
         const name = item.name || item.characterName || item.title;
         if (!name) return;
+
         upsertResource('characters', {
           ...item,
           id: item.id || crypto.randomUUID(),
@@ -83,6 +93,7 @@ const ResourceLibrary = () => {
           status: item.status || (item.images?.length ? '已完成' : '待补齐')
         });
       });
+
       alert(`角色 JSON 导入完成，共处理 ${candidates.length} 条。`);
     } catch (error) {
       alert('角色 JSON 解析失败，请确认格式正确。');
@@ -90,8 +101,9 @@ const ResourceLibrary = () => {
   };
 
   const createResource = () => {
-    const name = window.prompt(`请输入${tabs.find((tab) => tab.key === activeTab)?.label || '资源'}名称`);
+    const name = window.prompt(`请输入${activeTabLabel}名称`);
     if (!name) return;
+
     const id = crypto.randomUUID();
     upsertResource(activeTab, {
       id,
@@ -100,6 +112,7 @@ const ResourceLibrary = () => {
       status: '待补齐',
       images: []
     });
+
     navigate(`/resources/${activeTab}/${id}`);
   };
 
@@ -107,23 +120,24 @@ const ResourceLibrary = () => {
     <div className="stack">
       <div className="card">
         <ResourceHeader
-          activeTab={activeTab}
           tagFilter={tagFilter}
           showMissing={showMissing}
           onTagFilterChange={setTagFilter}
           onToggleMissing={setShowMissing}
           onClearTagFilter={() => setTagFilter('')}
-          onShowAllExpressions={() => {
-            setActiveTab('expressions');
-            setShowMissing(false);
-          }}
         />
 
         <div className="row" style={{ marginTop: 10 }}>
-          <button type="button" onClick={createResource}>新增{tabs.find((tab) => tab.key === activeTab)?.label}</button>
+          <button type="button" onClick={createResource}>
+            新增{activeTabLabel}
+          </button>
           {activeTab === 'characters' && (
             <>
-              <button type="button" className="button-secondary" onClick={() => characterImportRef.current?.click()}>
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={() => characterImportRef.current?.click()}
+              >
                 上传角色 JSON
               </button>
               <input
@@ -139,11 +153,18 @@ const ResourceLibrary = () => {
       </div>
 
       <div className="card">
-        <ResourceTabs tabs={tabs} activeTab={activeTab} hasMissingByTab={hasMissingByTab} onTabChange={setActiveTab} />
+        <ResourceTabs
+          tabs={tabs}
+          activeTab={activeTab}
+          hasMissingByTab={hasMissingByTab}
+          onTabChange={setActiveTab}
+        />
+
         <div className="grid fixed-four">
           {filteredResources.map((resource) => {
             const coverImage = pickCoverImage(resource);
             const statusText = resource.status || (coverImage ? '已完成' : '待补齐');
+
             return (
               <ResourceCard
                 key={resource.id}
@@ -156,13 +177,26 @@ const ResourceLibrary = () => {
               />
             );
           })}
-          <div className="item-card add-card" role="button" tabIndex={0} onClick={createResource} onKeyDown={(event) => event.key === 'Enter' && createResource()}>
+
+          <div
+            className="item-card add-card"
+            role="button"
+            tabIndex={0}
+            onClick={createResource}
+            onKeyDown={(event) => event.key === 'Enter' && createResource()}
+          >
             <div className="add-card-inner">
               <span className="add-icon">+</span>
               <span>新增资源</span>
             </div>
           </div>
         </div>
+
+        {filteredResources.length === 0 && (
+          <p className="muted" style={{ marginTop: 12 }}>
+            当前分类「{activeTabLabel}」暂无匹配资源，请尝试清空筛选或新增资源。
+          </p>
+        )}
       </div>
     </div>
   );
