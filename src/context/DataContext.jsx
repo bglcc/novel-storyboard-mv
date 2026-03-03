@@ -1,10 +1,21 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { getImageById, storeImageData } from '../utils/imageStore';
 import { DEFAULT_RESOURCE_KEYS } from '../config/resourceCategories';
+import {
+  ensureWorkspaceDirs,
+  formatDateKey,
+  hydrateWorkspaceHandle,
+  isWorkspaceApiSupported,
+  pickWorkspaceHandle,
+  pruneOldBackupDirs,
+  saveWorkspaceHandle,
+  writeJsonFile
+} from '../utils/workspaceFileSystem';
 
 const DataContext = createContext();
 const STORAGE_KEY = 'novel-storyboard-data';
+const VERSION_KEY = 'novel-storyboard-version';
 
 const defaultResources = DEFAULT_RESOURCE_KEYS.reduce((acc, key) => {
   acc[key] = [];
@@ -150,6 +161,21 @@ export const DataProvider = ({ children }) => {
     }
   });
 
+
+  const [workspaceHandle, setWorkspaceHandle] = useState(null);
+  const [workspaceState, setWorkspaceState] = useState({
+    supported: isWorkspaceApiSupported(),
+    connected: false,
+    directoryName: '',
+    lastSavedAt: null,
+    error: '',
+    errorCode: ''
+  });
+  const lastBackupHashRef = useRef('');
+  const saveQueueRef = useRef(Promise.resolve());
+  const latestSerializedRef = useRef('');
+  const [conflictState, setConflictState] = useState({ hasConflict: false, latestVersion: '', localVersion: '' });
+
   const hasIdbRef = (value) => typeof value === 'string' && value.startsWith('idb:');
   const isDataUrl = (value) => typeof value === 'string' && value.startsWith('data:');
 
@@ -180,18 +206,200 @@ export const DataProvider = ({ children }) => {
     return value;
   };
 
+  const enqueueWorkspaceSave = (payload) => {
+    saveQueueRef.current = saveQueueRef.current
+      .then(async () => {
+        const serialized = JSON.stringify(payload);
+        if (serialized === latestSerializedRef.current) return;
+        localStorage.setItem(STORAGE_KEY, serialized);
+        const saveSucceeded = await autoSaveToWorkspace(payload);
+        if (saveSucceeded) {
+          latestSerializedRef.current = serialized;
+        }
+      })
+      .catch((error) => {
+        console.error('Workspace save queue failed', error);
+      });
+    return saveQueueRef.current;
+  };
+
+  const writeSnapshotToWorkspace = async (snapshot) => {
+    await ensureWorkspaceDirs(workspaceHandle);
+    await writeJsonFile(workspaceHandle, 'volumeInfo', '全本信息.json', snapshot);
+  };
+
+  const writeShotDataToWorkspace = async (snapshot) => {
+    const shotDataPayload = {
+      savedAt: snapshot.savedAt,
+      volumes: (snapshot.data?.novels || []).map((novel) => ({
+        novelId: novel.id,
+        novelTitle: novel.title,
+        chapters: (novel.chapters || []).map((chapter, index) => ({
+          chapterId: chapter.id,
+          chapterTitle: chapter.title,
+          volumeNumber: index + 1,
+          shots: chapter.storyboardShots || []
+        }))
+      }))
+    };
+    await writeJsonFile(workspaceHandle, 'shotData', '分镜数据.json', shotDataPayload);
+  };
+
+  const autoSaveToWorkspace = async (currentData) => {
+    if (!workspaceHandle || !workspaceState.connected) return true;
+    const timestamp = Date.now();
+    const snapshot = {
+      savedAt: timestamp,
+      data: currentData
+    };
+
+    try {
+      await writeSnapshotToWorkspace(snapshot);
+      await writeShotDataToWorkspace(snapshot);
+
+      const currentHash = JSON.stringify(currentData);
+      const nextVersion = `${timestamp}-${currentHash.slice(0, 12)}`;
+      localStorage.setItem(VERSION_KEY, nextVersion);
+      setConflictState({ hasConflict: false, latestVersion: nextVersion, localVersion: nextVersion });
+      if (currentHash !== lastBackupHashRef.current) {
+        const backupDate = formatDateKey(timestamp);
+        const backupDir = await workspaceHandle.getDirectoryHandle('backup', { create: true });
+        const dateDir = await backupDir.getDirectoryHandle(backupDate, { create: true });
+        const moduleDir = await dateDir.getDirectoryHandle('volumeInfo', { create: true });
+        const backupName = `全本信息_备份_${timestamp}.json`;
+        const backupFile = await moduleDir.getFileHandle(backupName, { create: true });
+        const writable = await backupFile.createWritable();
+        await writable.write(JSON.stringify(snapshot, null, 2));
+        await writable.close();
+        lastBackupHashRef.current = currentHash;
+      }
+
+      try {
+        await pruneOldBackupDirs(workspaceHandle, 7);
+      } catch (pruneError) {
+        console.warn('Failed to prune old backups', pruneError);
+      }
+      setWorkspaceState((prev) => ({ ...prev, lastSavedAt: timestamp, error: '', errorCode: '' }));
+      return true;
+    } catch (error) {
+      console.error('Workspace save failed', error);
+      const errName = error?.name || '';
+      const isDirMissing = errName === 'NotFoundError';
+      const isPermission = errName === 'NotAllowedError' || errName === 'SecurityError';
+
+      if (isDirMissing) {
+        try {
+          await ensureWorkspaceDirs(workspaceHandle);
+          await writeSnapshotToWorkspace(snapshot);
+          await writeShotDataToWorkspace(snapshot);
+          setWorkspaceState((prev) => ({ ...prev, lastSavedAt: timestamp, error: '', errorCode: '' }));
+          return true;
+        } catch (retryError) {
+          console.error('Workspace retry save failed', retryError);
+        }
+      }
+
+      const message = isDirMissing
+        ? '资源库 / 备份等核心目录被修改或删除，请重新生成目录后重试。'
+        : isPermission
+          ? '目录写入权限失效，请重新授权目录后重试。'
+          : '本地磁盘空间不足或写入失败，请清理磁盘或切换目录后重试。';
+      const errorCode = isDirMissing ? 'DIR_MISSING' : isPermission ? 'PERMISSION' : 'WRITE_FAILED';
+      setWorkspaceState((prev) => ({
+        ...prev,
+        error: message,
+        errorCode
+      }));
+      return false;
+    }
+  };
+
+  const connectWorkspace = async () => {
+    if (!isWorkspaceApiSupported()) {
+      setWorkspaceState((prev) => ({
+        ...prev,
+        supported: false,
+        connected: false,
+        error: '当前浏览器不支持本地目录授权，请使用 Chrome / Edge。',
+        errorCode: 'UNSUPPORTED'
+      }));
+      return false;
+    }
+
+    try {
+      const handle = await pickWorkspaceHandle();
+      await ensureWorkspaceDirs(handle);
+      await saveWorkspaceHandle(handle);
+      setWorkspaceHandle(handle);
+      setWorkspaceState((prev) => ({
+        ...prev,
+        supported: true,
+        connected: true,
+        directoryName: handle.name || '',
+        error: '',
+        errorCode: ''
+      }));
+      return true;
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        return false;
+      }
+      setWorkspaceState((prev) => ({
+        ...prev,
+        connected: false,
+        error: error?.message || '目录授权失败，请重试。',
+        errorCode: 'PERMISSION'
+      }));
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const restoreWorkspace = async () => {
+      try {
+        const handle = await hydrateWorkspaceHandle();
+        if (!handle || cancelled) return;
+        await ensureWorkspaceDirs(handle);
+        setWorkspaceHandle(handle);
+        setWorkspaceState((prev) => ({
+          ...prev,
+          supported: true,
+          connected: true,
+          directoryName: handle.name || '',
+          error: '',
+          errorCode: ''
+        }));
+      } catch (error) {
+        if (cancelled) return;
+        setWorkspaceState((prev) => ({
+          ...prev,
+          connected: false,
+          error: '工作目录不可用，请重新授权。',
+          errorCode: 'PERMISSION'
+        }));
+      }
+    };
+
+    restoreWorkspace();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const persist = async () => {
       const payload = await replaceImagesWithRefs(data);
       if (cancelled) return;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      await enqueueWorkspaceSave(payload);
     };
     persist();
     return () => {
       cancelled = true;
     };
-  }, [data]);
+  }, [data, workspaceHandle, workspaceState.connected]);
 
   useEffect(() => {
     let cancelled = false;
@@ -353,6 +561,55 @@ export const DataProvider = ({ children }) => {
     setData((prev) => ({ ...prev, rules: rules.map((rule) => ({ ...rule, id: rule.id || uuidv4() })) }));
   };
 
+  const persistCurrentSnapshot = async () => {
+    const payload = await replaceImagesWithRefs(data);
+    await enqueueWorkspaceSave(payload);
+  };
+
+  const regenerateWorkspaceDirs = async () => {
+    if (!workspaceHandle) return false;
+    try {
+      await ensureWorkspaceDirs(workspaceHandle);
+      setWorkspaceState((prev) => ({ ...prev, error: '', errorCode: '' }));
+      return true;
+    } catch (error) {
+      setWorkspaceState((prev) => ({ ...prev, error: '资源目录修复失败，请重新授权目录后重试。', errorCode: 'PERMISSION' }));
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    const syncVersionState = () => {
+      const latest = localStorage.getItem(VERSION_KEY) || '';
+      if (!latest) return;
+      setConflictState((prev) => {
+        if (!prev.localVersion) return { ...prev, latestVersion: latest, localVersion: latest, hasConflict: false };
+        if (latest !== prev.localVersion) {
+          return { ...prev, latestVersion: latest, hasConflict: true };
+        }
+        return prev;
+      });
+    };
+
+    syncVersionState();
+    window.addEventListener('focus', syncVersionState);
+    window.addEventListener('storage', syncVersionState);
+    return () => {
+      window.removeEventListener('focus', syncVersionState);
+      window.removeEventListener('storage', syncVersionState);
+    };
+  }, []);
+
+  const resolveConflict = async (mode) => {
+    if (!conflictState.hasConflict) return;
+    if (mode === 'reload_latest') {
+      window.location.reload();
+      return;
+    }
+    setConflictState((prev) => ({ ...prev, hasConflict: false, localVersion: prev.latestVersion }));
+    await persistCurrentSnapshot();
+  };
+
   const value = {
     data,
     addNovel,
@@ -366,7 +623,12 @@ export const DataProvider = ({ children }) => {
     deleteResource,
     upsertRule,
     deleteRule,
-    importRules
+    importRules,
+    workspaceState,
+    connectWorkspace,
+    regenerateWorkspaceDirs,
+    conflictState,
+    resolveConflict
   };
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;

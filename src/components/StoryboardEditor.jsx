@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import JSZip from 'jszip';
 import { useData } from '../context/DataContext';
 import { saveFileWithFallback, sha256, validateFile } from '../utils/localFileBridge';
 import { SHOT_LEVEL_CONFIG, FIELD_LABELS } from './StoryboardEditor/constants/shotLevelConfig';
 import { RESOURCE_ABBREVIATIONS, RESOURCE_TYPE_LABELS } from './StoryboardEditor/constants/resourceConfig';
 import { getShotValidation } from './StoryboardEditor/utils/validators';
 import { migrateChapterStoryboard } from './StoryboardEditor/utils/migration';
+import { buildImportValidationMessage, validateImportedShotList } from './StoryboardEditor/utils/importValidator';
 
 const levels = [
   { value: 'L1', label: 'L1 静态单层' },
@@ -12,6 +14,16 @@ const levels = [
   { value: 'L3', label: 'L3 复杂动作' },
   { value: 'L4', label: 'L4 多人交互' }
 ];
+
+const A_LEVEL_CLIP_STANDARD_PARAMS = '分辨率：1920×1080，帧率：24帧/秒，画幅比例：16:9，转场方式：硬切，转场时长：0.1秒，单镜头时长：按分镜JSON shotDuration字段，音频类型：国风纯音乐（背景）+基础音效，音量：背景乐30%，音效80%';
+const B_LEVEL_MANUAL_FOCUS = '中等级镜头：优先保证节奏连贯，按动作起止点微调时长与转场。';
+const C_LEVEL_MANUAL_FOCUS = '基础镜头：优先保证叙事清晰，避免复杂转场，人工复核字幕与音效落点。';
+
+const levelToClipGrade = (level) => {
+  if (level === 'L3' || level === 'L4') return 'A';
+  if (level === 'L2') return 'B';
+  return 'C';
+};
 
 const SHOT_TEMPLATES = [
   { id: 'subjective-closeup', label: '主观视角近景', level: 'L1', shotType: '近景', cameraAngle: '平视主观', sceneDescription: '主角主观视角观察关键对象', visualDescription: '画面聚焦主体细节，突出情绪与信息点', editMethod: '硬切到下一镜头', transitionToNext: '硬切' },
@@ -62,9 +74,9 @@ const makeKeyframe = (index) => ({
   videoAsset: { fileName: '', localPath: '', remoteUrl: '', preview: '', updatedAt: null }
 });
 
-const makeShot = (index, outlineIndex = index) => ({
+const makeShot = (index, outlineIndex = index, volumeNumber = 1) => ({
   id: crypto.randomUUID(),
-  shotNumber: `Shot-${String(index + 1).padStart(3, '0')}`,
+  shotNumber: toShotNumber(index, volumeNumber),
   outlineIndex,
   synopsis: '',
   level: 'L1',
@@ -81,12 +93,12 @@ const makeShot = (index, outlineIndex = index) => ({
 
 const getResourceTypeLabel = (type) => RESOURCE_TYPE_LABELS[type] || type;
 
-const toShotNumber = (index) => `Shot-${String(index + 1).padStart(3, '0')}`;
+const toShotNumber = (index, volumeNumber = 1) => `V${volumeNumber}-S${String(index + 1).padStart(3, '0')}`;
 
-const withReorderedShotNumbers = (shots = []) =>
+const withReorderedShotNumbers = (shots = [], volumeNumber = 1) =>
   shots.map((shot, index) => ({
     ...shot,
-    shotNumber: toShotNumber(index)
+    shotNumber: toShotNumber(index, volumeNumber)
   }));
 
 const getResourceNamePrefix = (type) => RESOURCE_ABBREVIATIONS[type] || 'RS';
@@ -180,8 +192,15 @@ const parseResourceAbbr = (value) => {
   };
 };
 
+const pickUnknownFields = (source = {}, knownKeys = []) => {
+  const known = new Set(knownKeys);
+  return Object.fromEntries(
+    Object.entries(source).filter(([key]) => !known.has(key))
+  );
+};
+
 const StoryboardEditor = ({ novelId, chapter }) => {
-  const { updateChapter } = useData();
+  const { data, updateChapter } = useData();
   const [activeOutlineId, setActiveOutlineId] = useState(chapter.storyboardOutlineItems?.[0]?.id || '');
   const [activeShotId, setActiveShotId] = useState(chapter.storyboardShots?.[0]?.id || '');
   const [activeFrameId, setActiveFrameId] = useState('main');
@@ -192,6 +211,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [showTemplateMenu, setShowTemplateMenu] = useState(false);
   const [toasts, setToasts] = useState([]);
+  const [selectedShotIds, setSelectedShotIds] = useState([]);
   const replaceInputRef = useRef(null);
   const outlineUploadRef = useRef(null);
   const previewUrlsRef = useRef(new Set());
@@ -204,6 +224,13 @@ const StoryboardEditor = ({ novelId, chapter }) => {
 
   const outlineItems = chapter.storyboardOutlineItems || [];
   const shots = chapter.storyboardShots || [];
+
+  const volumeNumber = useMemo(() => {
+    const targetNovel = (data?.novels || []).find((novel) => novel.id === novelId);
+    if (!targetNovel) return 1;
+    const index = (targetNovel.chapters || []).findIndex((chapterItem) => chapterItem.id === chapter.id);
+    return index >= 0 ? index + 1 : 1;
+  }, [data?.novels, novelId, chapter.id]);
 
   const activeShot = useMemo(() => shots.find((item) => item.id === activeShotId) || null, [shots, activeShotId]);
 
@@ -241,6 +268,11 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     [shots]
   );
 
+
+  useEffect(() => {
+    const availableIds = new Set(shots.map((shot) => shot.id));
+    setSelectedShotIds((prev) => prev.filter((shotId) => availableIds.has(shotId)));
+  }, [shots]);
 
   const activeLevelRequiredFields = useMemo(() => {
     const level = activeShot?.level || 'L1';
@@ -352,7 +384,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   };
 
   const syncShotStatus = (nextShots) => {
-    const normalized = withReorderedShotNumbers(nextShots).map((shot) => {
+    const normalized = withReorderedShotNumbers(nextShots, volumeNumber).map((shot) => {
       const validation = getShotValidation(shot);
       const done = validation.isValid;
       return {
@@ -408,10 +440,25 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       const sceneId = parsed?.sceneId || '';
       const sceneName = parsed?.sceneName || '';
 
+      const validationResult = validateImportedShotList(source);
+      if (!validationResult.valid) {
+        throw new Error(buildImportValidationMessage(validationResult));
+      }
       const nextShots = source.map((item, index) => {
         const isNewShape = item?.mainFrame || item?.shotNumber;
         const mainFrame = item?.mainFrame || {};
         const resourcesRaw = mainFrame?.resources || item?.resources || [];
+        const rawTopLevelUnknown = pickUnknownFields(item, [
+          'id', 'shotNumber', 'shotId', 'outlineIndex', 'synopsis', 'text', 'outlineText', 'content',
+          'level', 'frameMode', 'keyframes', 'title', 'shotType', 'cameraAngle', 'sceneDescription',
+          'shotTime', 'visualDescription', 'editMethod', 'transitionToNext', 'duration', 'imageAsset',
+          'videoAsset', 'resources', 'status', 'completed', 'updatedAt', 'completedAt',
+          'audioPlaceholders', 'dialoguePlaceholder', 'bgmPlaceholder', 'sfxPlaceholder', 'mainFrame'
+        ]);
+        const rawMainFrameUnknown = pickUnknownFields(mainFrame, [
+          'title', 'shotType', 'cameraAngle', 'sceneDescription', 'shotTime', 'visualDescription',
+          'editMethod', 'transitionToNext', 'duration', 'resources', 'imageAsset', 'videoAsset'
+        ]);
         const resources = (Array.isArray(resourcesRaw) ? resourcesRaw : [])
           .map((resource) => (typeof resource === 'string' ? parseResourceAbbr(resource) : resource))
           .map((resource) => ({
@@ -430,7 +477,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
 
         return {
           id: item?.id || crypto.randomUUID(),
-          shotNumber: item?.shotNumber || toShotNumber(index),
+          shotNumber: item?.shotNumber || item?.shotId || toShotNumber(index, volumeNumber),
           outlineIndex: Number.isFinite(item?.outlineIndex)
             ? item.outlineIndex
             : ((chapter?.storyboardOutlineItems?.length || 0) > 0 ? 0 : -1),
@@ -460,7 +507,9 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           },
           dialoguePlaceholder: item?.dialoguePlaceholder || item?.audioPlaceholders?.dialogue || '',
           bgmPlaceholder: item?.bgmPlaceholder || item?.audioPlaceholders?.bgm || '',
-          sfxPlaceholder: item?.sfxPlaceholder || item?.audioPlaceholders?.sfx || ''
+          sfxPlaceholder: item?.sfxPlaceholder || item?.audioPlaceholders?.sfx || '',
+          rawTopLevelUnknown,
+          rawMainFrameUnknown
         };
       });
 
@@ -501,7 +550,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   };
 
   const addShot = (outlineIndex = 0) => {
-    const shot = makeShot(shots.length, outlineIndex);
+    const shot = makeShot(shots.length, outlineIndex, volumeNumber);
     const targetIndex = activeShotId ? shots.findIndex((item) => item.id === activeShotId) + 1 : shots.length;
     const safeIndex = targetIndex > 0 ? targetIndex : shots.length;
     const next = [...shots.slice(0, safeIndex), shot, ...shots.slice(safeIndex)];
@@ -532,7 +581,75 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   };
 
 
+  const toggleShotSelection = (shotId) => {
+    setSelectedShotIds((prev) =>
+      prev.includes(shotId) ? prev.filter((id) => id !== shotId) : [...prev, shotId]
+    );
+  };
+
+  const selectAllShots = () => {
+    setSelectedShotIds(shots.map((shot) => shot.id));
+  };
+
+  const clearSelectedShots = () => {
+    setSelectedShotIds([]);
+  };
+
+  const invertSelectedShots = () => {
+    const selected = new Set(selectedShotIds);
+    const next = shots
+      .map((shot) => shot.id)
+      .filter((shotId) => !selected.has(shotId));
+    setSelectedShotIds(next);
+  };
+
+  const batchDeleteSelectedShots = () => {
+    if (selectedShotIds.length === 0) {
+      pushToast('请先勾选要删除的镜头。', 'warning');
+      return;
+    }
+
+    const selectedShots = shots.filter((shot) => selectedShotIds.includes(shot.id));
+    const boundCount = selectedShots.reduce((count, shot) => count + getShotBindingCount(shot), 0);
+    const message = boundCount > 0
+      ? `确认删除已勾选的 ${selectedShots.length} 条镜头吗？其中包含 ${boundCount} 个已绑定素材，删除后将解除绑定且不可恢复！`
+      : `确认删除已勾选的 ${selectedShots.length} 条镜头吗？删除后不可恢复！`;
+
+    if (!window.confirm(message)) return;
+
+    const selectedSet = new Set(selectedShotIds);
+    const next = shots.filter((shot) => !selectedSet.has(shot.id));
+    syncShotStatus(next);
+    setSelectedShotIds([]);
+
+    if (activeShotId && selectedSet.has(activeShotId)) {
+      setActiveShotId(next[0]?.id || '');
+      setActiveFrameId('main');
+    }
+  };
+
+  const getShotBindingCount = (shot) => {
+    const mainBound = (shot?.resources || []).filter((resource) => resource?.status === 'uploaded').length;
+    const keyframeBound = (shot?.keyframes || []).reduce(
+      (count, frame) => count + (frame?.resources || []).filter((resource) => resource?.status === 'uploaded').length,
+      0
+    );
+    return mainBound + keyframeBound;
+  };
+
   const deleteShot = (shotId) => {
+    const targetShot = shots.find((shot) => shot.id === shotId);
+    if (!targetShot) return;
+
+    const boundCount = getShotBindingCount(targetShot);
+    const confirmMessage = boundCount > 0
+      ? `确认删除【${targetShot.shotNumber || '未命名镜头'}】吗？该镜头包含 ${boundCount} 个已绑定素材，删除后将解除全部绑定且不可恢复！`
+      : `确认删除【${targetShot.shotNumber || '未命名镜头'}】吗？删除后不可恢复！`;
+
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
     const next = shots.filter((shot) => shot.id !== shotId);
     syncShotStatus(next);
     if (activeShotId === shotId) {
@@ -711,6 +828,126 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     }
   };
 
+  const toCsvCell = (value) => {
+    const text = String(value ?? '');
+    const escaped = text.replace(/"/g, '""');
+    return `"${escaped}"`;
+  };
+
+  const exportClipGradeTable = async () => {
+    const columns = ['镜号', '景别', '镜头时长（秒）', '剪辑等级', '剪映标准化参数', '人工调控重点', '音效卡点要求', '关联素材'];
+    const rows = shots.map((shot) => {
+      const grade = levelToClipGrade(shot.level);
+      const gradeParams = grade === 'A' ? A_LEVEL_CLIP_STANDARD_PARAMS : '无固定参数';
+      const linkedMaterials = (shot.resources || [])
+        .filter((resource) => resource?.status === 'uploaded' && resource?.name)
+        .map((resource) => resource.name)
+        .join(' / ');
+      const manualFocus = shot.editMethod
+        || shot.visualDescription
+        || (grade === 'B' ? B_LEVEL_MANUAL_FOCUS : grade === 'C' ? C_LEVEL_MANUAL_FOCUS : '按A级参数执行');
+
+      return [
+        shot.shotNumber || '',
+        shot.shotType || '',
+        shot.shotTime || shot.duration || '',
+        grade,
+        gradeParams,
+        manualFocus,
+        shot.audioPlaceholders?.sfx || '无',
+        linkedMaterials || '无'
+      ];
+    });
+
+    const allRows = [columns, ...rows];
+
+    const escapeXml = (text) =>
+      String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+
+    const cellRef = (row, col) => {
+      let colName = '';
+      let n = col + 1;
+      while (n > 0) {
+        const rem = (n - 1) % 26;
+        colName = String.fromCharCode(65 + rem) + colName;
+        n = Math.floor((n - 1) / 26);
+      }
+      return `${colName}${row + 1}`;
+    };
+
+    const sheetCells = allRows
+      .map((row, rowIndex) => {
+        const cells = row
+          .map((value, colIndex) => `<c r="${cellRef(rowIndex, colIndex)}" t="inlineStr"><is><t>${escapeXml(value)}</t></is></c>`)
+          .join('');
+        return `<row r="${rowIndex + 1}">${cells}</row>`;
+      })
+      .join('');
+
+    const worksheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>${sheetCells}</sheetData>
+</worksheet>`;
+
+    const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="剪辑分级表" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`;
+
+    const workbookRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+    const rootRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`;
+
+    const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+  <borders count="1"><border/></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`;
+
+    const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>`;
+
+    const zip = new JSZip();
+    zip.file('[Content_Types].xml', contentTypesXml);
+    zip.folder('_rels').file('.rels', rootRelsXml);
+    zip.folder('xl').file('workbook.xml', workbookXml);
+    zip.folder('xl').folder('_rels').file('workbook.xml.rels', workbookRelsXml);
+    zip.folder('xl').folder('worksheets').file('sheet1.xml', worksheetXml);
+    zip.folder('xl').file('styles.xml', stylesXml);
+
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${chapter.title}-剪辑分级表-${Date.now()}.xlsx`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const exportClipPackage = () => {
     const payload = {
       novelId,
@@ -719,11 +956,13 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       generatedAt: new Date().toISOString(),
       chapterSummary: chapter.editingWorkflow?.chapterSummary || '',
       shots: shots.map((shot) => ({
+        ...(shot.rawTopLevelUnknown || {}),
         shotNumber: shot.shotNumber,
         level: shot.level,
         synopsis: shot.synopsis,
         frameMode: shot.keyframesEnabled ? 'keyframes' : 'single',
         mainFrame: {
+          ...(shot.rawMainFrameUnknown || {}),
           title: shot.title,
           shotType: shot.shotType,
           cameraAngle: shot.cameraAngle,
@@ -1079,6 +1318,14 @@ const StoryboardEditor = ({ novelId, chapter }) => {
             >
               导出剪映清单
             </button>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={exportClipGradeTable}
+              title="导出剪辑分级表（CSV）"
+            >
+              导出剪辑分级表
+            </button>
           </div>
         </div>
 
@@ -1092,6 +1339,11 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                 <span>{timelineZoom.toFixed(1)}x</span>
               </label>
               <button type="button" onClick={addOutline}>新增场景</button>
+              <button type="button" className="tab" onClick={selectAllShots}>全选镜头</button>
+              <button type="button" className="tab" onClick={invertSelectedShots}>反选镜头</button>
+              <button type="button" className="tab" onClick={clearSelectedShots}>清空勾选</button>
+              <span className="status-chip">已勾选 {selectedShotIds.length} 条</span>
+              <button type="button" className="danger" onClick={batchDeleteSelectedShots}>批量删除</button>
             </div>
           </div>
 
@@ -1155,6 +1407,17 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                           setHighlightIncompleteShotId('');
                         }}
                       >
+                        <span>
+                          <input
+                            type="checkbox"
+                            checked={selectedShotIds.includes(shot.id)}
+                            onChange={(event) => {
+                              event.stopPropagation();
+                              toggleShotSelection(shot.id);
+                            }}
+                            onClick={(event) => event.stopPropagation()}
+                          />
+                        </span>
                         <span>#{shot.shotNumber}</span>
                         <span>{shot.synopsis || shot.title || '未命名镜头'}</span>
                         <span>{shot.level}</span>
