@@ -918,9 +918,17 @@ const ResourceDetail = () => {
 
   const characterReferences = resolveFormReferences();
   const { requirements: viewRequirements, assets: viewAssets } = resolveFormViews();
-  const viewList = viewRequirements.length
-    ? viewRequirements
-    : Array.from(new Set(viewAssets.map((asset) => asset.viewAngle)));
+  const CHARACTER_REQUIRED_VIEWS = ['正面-全身-站立'];
+  const CHARACTER_OPTIONAL_VIEWS = ['侧面-全身-站立', '背面-全身-站立', '正面-中景', 'Q版形象'];
+  const storyboardViewRequirements = Array.from(new Set((viewRequirements || []).filter(Boolean)));
+  const viewList = Array.from(
+    new Set([
+      ...CHARACTER_REQUIRED_VIEWS,
+      ...CHARACTER_OPTIONAL_VIEWS,
+      ...storyboardViewRequirements,
+      ...viewAssets.map((asset) => asset.viewAngle)
+    ])
+  );
   const expressionHistory = (meta.expressionHistory || []).filter((item) => {
     if (!historyQuery.trim()) return true;
     return `${item.character || ''}${item.name || ''}`.toLowerCase().includes(historyQuery.toLowerCase());
@@ -1467,6 +1475,9 @@ const ResourceDetail = () => {
           handleCharacterExport={handleCharacterExport}
           viewList={viewList}
           viewAssets={viewAssets}
+          requiredViewList={CHARACTER_REQUIRED_VIEWS}
+          optionalViewList={CHARACTER_OPTIONAL_VIEWS}
+          storyboardViewList={storyboardViewRequirements}
           openPreview={openPreview}
           viewInputRefs={viewInputRefs}
           handleViewUpload={handleViewUpload}

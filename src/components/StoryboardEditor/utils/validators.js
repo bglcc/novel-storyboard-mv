@@ -20,16 +20,20 @@ const validateResourceRequirements = (requirements = {}, uploadedByType = {}) =>
   const missingMessages = [];
   const allOf = requirements?.allOf || [];
   const anyOf = requirements?.anyOf || [];
+  const optionalTypes = new Set(['characters', 'scenes']);
 
   allOf.forEach((rule) => {
+    if (optionalTypes.has(rule.type)) return;
     const count = uploadedByType[rule.type] || 0;
     if (count < rule.min) missingMessages.push(toResourceMessage(rule));
   });
 
   if (anyOf.length > 0) {
-    const matched = anyOf.some((rule) => (uploadedByType[rule.type] || 0) >= rule.min);
+    const effectiveRules = anyOf.filter((rule) => !optionalTypes.has(rule.type));
+    if (effectiveRules.length === 0) return missingMessages;
+    const matched = effectiveRules.some((rule) => (uploadedByType[rule.type] || 0) >= rule.min);
     if (!matched) {
-      const options = anyOf.map((rule) => `${rule.min}个${RESOURCE_TYPE_LABELS[rule.type] || rule.type}资源`).join('或');
+      const options = effectiveRules.map((rule) => `${rule.min}个${RESOURCE_TYPE_LABELS[rule.type] || rule.type}资源`).join('或');
       missingMessages.push(`需至少关联 ${options}`);
     }
   }
@@ -46,6 +50,10 @@ export const getShotValidation = (shot) => {
   const missingFields = (config.requiredFields || [])
     .filter((field) => isMissing(shot?.[field]))
     .map((field) => `${FIELD_LABELS[field] || field}未填写`);
+
+  if (isMissing(shot?.sceneDescription)) {
+    missingFields.push('请填写场景描述');
+  }
 
   const missingAssets = (config.requiredAssets || [])
     .filter((asset) => isMissing(shot?.[asset]?.fileName))

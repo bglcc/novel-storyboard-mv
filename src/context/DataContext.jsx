@@ -12,6 +12,7 @@ import {
   saveWorkspaceHandle,
   writeJsonFile
 } from '../utils/workspaceFileSystem';
+import { getResourceStatusLabel } from '../constants/resourceStatusLabelDict';
 
 const DataContext = createContext();
 const STORAGE_KEY = 'novel-storyboard-data';
@@ -25,7 +26,8 @@ const defaultResources = DEFAULT_RESOURCE_KEYS.reduce((acc, key) => {
 const defaultData = {
   novels: [],
   resources: defaultResources,
-  rules: []
+  rules: [],
+  resourceOperationLogs: []
 };
 
 const createDefaultChapter = ({ id, title, content = '' } = {}) => ({
@@ -58,6 +60,7 @@ const normalizeShotResource = (resource) => ({
   name: resource.name || '未命名资源',
   subType: resource.subType || '',
   status: resource.status || 'missing',
+  statusLabel: resource.statusLabel || getResourceStatusLabel(resource.status || 'missing'),
   fileName: resource.fileName || '',
   localPath: resource.localPath || '',
   remoteUrl: resource.remoteUrl || '',
@@ -75,8 +78,13 @@ const normalizeShot = (shot, index) => ({
   synopsis: shot.synopsis || shot.description || '',
   level: ['L1', 'L2', 'L3', 'L4'].includes(shot.level) ? shot.level : 'L1',
   shotType: shot.shotType || '',
+  shotMotion: shot.shotMotion || '',
   cameraAngle: shot.cameraAngle || '',
+  sceneBelong: shot.sceneBelong || '',
   sceneDescription: shot.sceneDescription || '',
+  visualContent: shot.visualContent || shot.sceneDescription || '',
+  materialContent: Array.isArray(shot.materialContent) ? shot.materialContent : [],
+  soundEffect: shot.soundEffect || '',
   shotTime: shot.shotTime || '',
   visualDescription: shot.visualDescription || '',
   editMethod: shot.editMethod || '',
@@ -137,6 +145,7 @@ export const DataProvider = ({ children }) => {
         ...parsed,
         resources: { ...defaultResources, ...(parsed.resources || {}) },
         rules: parsed.rules || [],
+        resourceOperationLogs: Array.isArray(parsed.resourceOperationLogs) ? parsed.resourceOperationLogs : [],
         novels: (parsed.novels || []).map((novel) => ({
           ...novel,
           cover: novel.cover ?? '',
@@ -415,6 +424,32 @@ export const DataProvider = ({ children }) => {
     };
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const nextLogs = Array.isArray(data.resourceOperationLogs) ? data.resourceOperationLogs : [];
+    window.data = {
+      ...(window.data || {}),
+      resourceOperationLogs: nextLogs
+    };
+    window.resourceOperationLogs = nextLogs;
+  }, [data.resourceOperationLogs]);
+
+  const appendResourceOperationLog = (logItem = {}) => {
+    const nextLog = {
+      ...logItem,
+      id: logItem.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      ts: logItem.ts || Date.now()
+    };
+    setData((prev) => {
+      const previousLogs = Array.isArray(prev.resourceOperationLogs) ? prev.resourceOperationLogs : [];
+      return {
+        ...prev,
+        resourceOperationLogs: [...previousLogs, nextLog]
+      };
+    });
+    return nextLog;
+  };
+
   const addNovel = (title, cover = '') => {
     const newNovel = {
       id: uuidv4(),
@@ -628,7 +663,8 @@ export const DataProvider = ({ children }) => {
     connectWorkspace,
     regenerateWorkspaceDirs,
     conflictState,
-    resolveConflict
+    resolveConflict,
+    appendResourceOperationLog
   };
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;

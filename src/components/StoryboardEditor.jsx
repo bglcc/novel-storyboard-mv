@@ -7,6 +7,9 @@ import { RESOURCE_ABBREVIATIONS, RESOURCE_TYPE_LABELS } from './StoryboardEditor
 import { getShotValidation } from './StoryboardEditor/utils/validators';
 import { migrateChapterStoryboard } from './StoryboardEditor/utils/migration';
 import { buildImportValidationMessage, validateImportedShotList } from './StoryboardEditor/utils/importValidator';
+import { getResourceStatusLabel } from '../constants/resourceStatusLabelDict';
+import { ResourceService } from '../services/ResourceService';
+import { ResourceErrorCodes } from '../constants/errorCodes';
 
 const levels = [
   { value: 'L1', label: 'L1 静态单层' },
@@ -25,6 +28,17 @@ const levelToClipGrade = (level) => {
   return 'C';
 };
 
+const generateClipMethod = (shot = {}) => {
+  const shotNumber = shot.shotNumber || '未编号镜头';
+  const shotType = shot.shotType || '镜头';
+  const shotMotion = shot.shotMotion || '固定';
+  const cameraAngle = shot.cameraAngle || '平视';
+  const visualContent = shot.visualContent || shot.visualDescription || shot.sceneDescription || '画面信息待补充';
+  const soundEffect = shot.soundEffect || '无';
+  const sceneBelong = shot.sceneBelong || shot.sceneDescription || '未标注场景';
+  return `${shotNumber}：以${cameraAngle}${shotType}执行${shotMotion}，主画面为「${visualContent}」，场景定位「${sceneBelong}」，音效/台词为「${soundEffect}」。建议以前后镜头动作方向一致的硬切或轻转场衔接。`;
+};
+
 const SHOT_TEMPLATES = [
   { id: 'subjective-closeup', label: '主观视角近景', level: 'L1', shotType: '近景', cameraAngle: '平视主观', sceneDescription: '主角主观视角观察关键对象', visualDescription: '画面聚焦主体细节，突出情绪与信息点', editMethod: '硬切到下一镜头', transitionToNext: '硬切' },
   { id: 'wide-establishing', label: '全景空镜', level: 'L1', shotType: '全景', cameraAngle: '高机位', sceneDescription: '交代环境关系和空间位置', visualDescription: '环境主体明确，画面留白用于后续剪辑衔接', editMethod: '淡入淡出', transitionToNext: '淡出' },
@@ -37,8 +51,13 @@ const SHOT_TEMPLATES = [
 const baseFrameFields = {
   title: '',
   shotType: '',
+  shotMotion: '',
   cameraAngle: '',
+  sceneBelong: '',
   sceneDescription: '',
+  visualContent: '',
+  materialContent: [],
+  soundEffect: '',
   shotTime: '',
   visualDescription: '',
   editMethod: ''
@@ -58,12 +77,24 @@ const makeResource = (type = 'characters') => ({
   subType: '',
   prompt: '',
   status: 'missing',
+  statusLabel: getResourceStatusLabel('missing'),
   fileName: '',
   localPath: '',
   remoteUrl: '',
   preview: '',
   updatedAt: null
 });
+
+const validateCharacterResource = (resource = {}) => {
+  if (resource?.type !== 'characters') return { ok: true };
+  const subType = String(resource?.subType || '');
+  if (!subType.includes('正面') || !subType.includes('全身')) {
+    return { ok: false, message: '角色资源创建时请先在二级资源类型中填写“正面全身”。' };
+  }
+  if (resource?.status === 'uploaded' && resource?.fileName) return { ok: true };
+  if (resource?.status === 'uploaded' || resource?.fileName) return { ok: true };
+  return { ok: false, message: '角色资源创建时必须上传「正面全身图」。' };
+};
 
 const makeKeyframe = (index) => ({
   id: crypto.randomUUID(),
@@ -174,7 +205,14 @@ const parseResourceAbbr = (value) => {
   const raw = String(value || '').trim();
   const parts = raw.split(/-+/).map((item) => item.trim()).filter(Boolean);
   if (parts.length < 3) {
-    return { id: crypto.randomUUID(), type: 'characters', code: 'unknown', name: raw || '未命名资源', status: 'uploaded' };
+    return {
+      id: crypto.randomUUID(),
+      type: 'characters',
+      code: 'unknown',
+      name: raw || '未命名资源',
+      status: 'uploaded',
+      statusLabel: getResourceStatusLabel('uploaded')
+    };
   }
   const [abbr, code, ...rest] = parts;
   const type = Object.keys(RESOURCE_ABBREVIATIONS).find((key) => RESOURCE_ABBREVIATIONS[key] === abbr) || 'characters';
@@ -184,12 +222,35 @@ const parseResourceAbbr = (value) => {
     code,
     name: rest.join('-') || '未命名资源',
     status: 'uploaded',
+    statusLabel: getResourceStatusLabel('uploaded'),
     fileName: '',
     localPath: '',
     remoteUrl: '',
     preview: '',
     updatedAt: null
   };
+};
+
+const normalizeMaterialContentEntries = (value) => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') return null;
+      const typeMap = {
+        character: 'characters',
+        characters: 'characters',
+        scene: 'scenes',
+        scenes: 'scenes',
+        prop: 'props',
+        props: 'props'
+      };
+      const rawType = String(entry.type || '').trim().toLowerCase();
+      const type = typeMap[rawType] || rawType;
+      const name = String(entry.name || '').trim();
+      if (!type || !name) return null;
+      return { type, name };
+    })
+    .filter(Boolean);
 };
 
 const pickUnknownFields = (source = {}, knownKeys = []) => {
@@ -200,7 +261,7 @@ const pickUnknownFields = (source = {}, knownKeys = []) => {
 };
 
 const StoryboardEditor = ({ novelId, chapter }) => {
-  const { data, updateChapter } = useData();
+  const { data, updateChapter, appendResourceOperationLog } = useData();
   const [activeOutlineId, setActiveOutlineId] = useState(chapter.storyboardOutlineItems?.[0]?.id || '');
   const [activeShotId, setActiveShotId] = useState(chapter.storyboardShots?.[0]?.id || '');
   const [activeFrameId, setActiveFrameId] = useState('main');
@@ -212,7 +273,11 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const [showTemplateMenu, setShowTemplateMenu] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [selectedShotIds, setSelectedShotIds] = useState([]);
+  const [sceneInputMode, setSceneInputMode] = useState('manual');
+  const [lastMaterialRequirementMeta, setLastMaterialRequirementMeta] = useState([]);
+  const [tempPackageHistory, setTempPackageHistory] = useState([]);
   const replaceInputRef = useRef(null);
+  const batchUploadRef = useRef(null);
   const outlineUploadRef = useRef(null);
   const previewUrlsRef = useRef(new Set());
   const [expandedFolders, setExpandedFolders] = useState({
@@ -450,14 +515,15 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         const resourcesRaw = mainFrame?.resources || item?.resources || [];
         const rawTopLevelUnknown = pickUnknownFields(item, [
           'id', 'shotNumber', 'shotId', 'outlineIndex', 'synopsis', 'text', 'outlineText', 'content',
-          'level', 'frameMode', 'keyframes', 'title', 'shotType', 'cameraAngle', 'sceneDescription',
-          'shotTime', 'visualDescription', 'editMethod', 'transitionToNext', 'duration', 'imageAsset',
+          'level', 'frameMode', 'keyframes', 'title', 'shotType', 'shotMotion', 'cameraAngle', 'sceneBelong', 'sceneDescription',
+          'visualContent', 'materialContent', 'soundEffect', 'shotTime', 'visualDescription', 'editMethod', 'transitionToNext', 'duration', 'imageAsset',
           'videoAsset', 'resources', 'status', 'completed', 'updatedAt', 'completedAt',
           'audioPlaceholders', 'dialoguePlaceholder', 'bgmPlaceholder', 'sfxPlaceholder', 'mainFrame'
         ]);
         const rawMainFrameUnknown = pickUnknownFields(mainFrame, [
-          'title', 'shotType', 'cameraAngle', 'sceneDescription', 'shotTime', 'visualDescription',
-          'editMethod', 'transitionToNext', 'duration', 'resources', 'imageAsset', 'videoAsset'
+          'title', 'shotType', 'shotMotion', 'cameraAngle', 'sceneBelong', 'sceneDescription', 'visualContent',
+          'materialContent', 'soundEffect', 'shotTime', 'visualDescription', 'editMethod', 'transitionToNext',
+          'duration', 'resources', 'imageAsset', 'videoAsset'
         ]);
         const resources = (Array.isArray(resourcesRaw) ? resourcesRaw : [])
           .map((resource) => (typeof resource === 'string' ? parseResourceAbbr(resource) : resource))
@@ -487,9 +553,16 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           keyframes: Array.isArray(item?.keyframes) ? item.keyframes : [],
           title: mainFrame?.title || item?.title || '',
           shotType: mainFrame?.shotType || item?.shotType || '',
+          shotMotion: mainFrame?.shotMotion || item?.shotMotion || '',
           cameraAngle: mainFrame?.cameraAngle || item?.cameraAngle || '',
+          sceneBelong: mainFrame?.sceneBelong || item?.sceneBelong || sceneName || '',
           sceneDescription: mainFrame?.sceneDescription || item?.sceneDescription || sceneName,
-          shotTime: item?.shotTime || '',
+          visualContent: mainFrame?.visualContent || item?.visualContent || mainFrame?.sceneDescription || item?.sceneDescription || '',
+          materialContent: Array.isArray(mainFrame?.materialContent)
+            ? mainFrame.materialContent
+            : (Array.isArray(item?.materialContent) ? item.materialContent : []),
+          soundEffect: mainFrame?.soundEffect || item?.soundEffect || '',
+          shotTime: mainFrame?.shotTime || item?.shotTime || '',
           visualDescription: mainFrame?.visualDescription || item?.visualDescription || '',
           editMethod: mainFrame?.editMethod || item?.editMethod || '',
           transitionToNext: item?.transitionToNext || mainFrame?.transitionToNext || '',
@@ -695,11 +768,19 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     updateActiveFrame({ resources: [...(activeFrame.resources || []), makeResource()] });
   };
 
+  const addResourcesBatch = (resourcesToAdd = []) => {
+    if (!activeFrame || !Array.isArray(resourcesToAdd) || resourcesToAdd.length === 0) return;
+    updateActiveFrame({ resources: [...(activeFrame.resources || []), ...resourcesToAdd] });
+  };
+
   const updateResource = (resourceId, patch) => {
     if (!activeFrame) return;
     const nextResources = (activeFrame.resources || []).map((resource) => {
       if (resource.id !== resourceId) return resource;
       const merged = { ...resource, ...patch };
+      if (Object.prototype.hasOwnProperty.call(patch, 'status') && !Object.prototype.hasOwnProperty.call(patch, 'statusLabel')) {
+        merged.statusLabel = getResourceStatusLabel(merged.status);
+      }
       if (Object.prototype.hasOwnProperty.call(patch, 'name') || Object.prototype.hasOwnProperty.call(patch, 'type')) {
         const { nextName, deduped } = normalizeResourceName({
           type: merged.type,
@@ -719,6 +800,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
 
   const uploadResourceFile = async (resourceId, file) => {
     if (!file || !activeFrame) return;
+    const resource = (activeFrame.resources || []).find((item) => item.id === resourceId);
     const check = validateFile(file);
     if (!check.ok) {
       pushToast(check.message,'error');
@@ -730,6 +812,16 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     }
 
     try {
+      const uploadResult = await ResourceService.uploadMaterial(file, resource?.type, chapter?.id || 'default');
+      if (!ResourceErrorCodes.checkVersion(uploadResult.errorCodeVersion)) {
+        pushToast('资源服务错误码版本不匹配，请刷新后重试。', 'error');
+        return;
+      }
+      if (!uploadResult.success) {
+        pushToast(uploadResult.message || '资源服务返回失败。', 'error');
+        return;
+      }
+
       const { duplicate, hash } = await ensureNoDuplicateHash(file);
       if (duplicate) {
         const confirmed = window.confirm('检测到重复文件，是否覆盖并同步更新所有同 hash 资源路径？');
@@ -739,7 +831,11 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         }
       }
 
-      const resource = (activeFrame.resources || []).find((item) => item.id === resourceId);
+      const validation = validateCharacterResource({ ...resource, status: 'uploaded', fileName: file.name });
+      if (!validation.ok) {
+        pushToast(validation.message, 'error');
+        return;
+      }
       const targetPath = buildTargetPath(resource?.type, resource?.subType);
       const [saveResult, preview] = await Promise.all([
         saveFileWithFallback({ file, targetPath }),
@@ -751,6 +847,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
 
       updateResource(resourceId, {
         status: 'uploaded',
+        statusLabel: getResourceStatusLabel('uploaded'),
         fileName: file.name,
         localPath: saveResult.localPath,
         preview,
@@ -770,6 +867,16 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       if (saveResult.error) {
         pushToast('本地服务不可用，已使用本地占位路径保存记录。','warning');
       }
+
+      appendResourceOperationLog({
+        type: 'resource_upload',
+        chapterId: chapter?.id,
+        shotId: activeShot?.id,
+        frameId: activeFrame?.id || 'main',
+        resourceId,
+        resourceName: resource?.name || file.name,
+        status: 'uploaded'
+      });
     } catch (error) {
       pushToast(error instanceof Error ? error.message : '资源上传失败，请重试。','error');
     }
@@ -965,8 +1072,13 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           ...(shot.rawMainFrameUnknown || {}),
           title: shot.title,
           shotType: shot.shotType,
+          shotMotion: shot.shotMotion || '',
           cameraAngle: shot.cameraAngle,
+          sceneBelong: shot.sceneBelong || '',
           sceneDescription: shot.sceneDescription,
+          visualContent: shot.visualContent || '',
+          materialContent: Array.isArray(shot.materialContent) ? shot.materialContent : [],
+          soundEffect: shot.soundEffect || '',
           shotTime: shot.shotTime,
           visualDescription: shot.visualDescription,
           editMethod: shot.editMethod,
@@ -1054,6 +1166,214 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     pushToast('已保存全局分镜数据。', 'success');
   };
 
+  const uploadResourceFileBatch = async (files = []) => {
+    if (!activeFrame) return;
+    const entries = Array.from(files || []);
+    if (entries.length === 0) return;
+
+    let success = 0;
+    for (const file of entries) {
+      const fileName = String(file?.name || '').toLowerCase();
+      const target = (activeFrame.resources || []).find((resource) => {
+        if (resource?.status === 'uploaded') return false;
+        const resourceName = String(resource?.name || '').toLowerCase();
+        return resourceName && fileName.includes(resourceName);
+      }) || (activeFrame.resources || []).find((resource) => resource?.status !== 'uploaded');
+
+      if (!target) continue;
+      // eslint-disable-next-line no-await-in-loop
+      await uploadResourceFile(target.id, file);
+      success += 1;
+    }
+    if (success === 0) {
+      pushToast('批量素材回传未匹配到可上传资源，请检查文件名与资源名称。', 'warning');
+      return;
+    }
+    pushToast(`批量素材回传完成：成功上传 ${success} 个文件。`, 'success');
+  };
+
+  const generateClipMethodsForSelection = () => {
+    const targetIds = selectedShotIds.length > 0
+      ? new Set(selectedShotIds)
+      : (activeShot ? new Set([activeShot.id]) : new Set());
+    if (targetIds.size === 0) {
+      pushToast('请先勾选镜头，或选中一个镜头后再生成剪辑手法。', 'warning');
+      return;
+    }
+    const next = shots.map((shot) => (targetIds.has(shot.id)
+      ? { ...shot, editMethod: generateClipMethod(shot) }
+      : shot));
+    syncShotStatus(next);
+    pushToast(`已生成 ${targetIds.size} 条镜头的剪辑手法。`, 'success');
+  };
+
+  const exportClipMethodList = () => {
+    const payload = shots.map((shot) => ({
+      shotId: shot.id,
+      shotNumber: shot.shotNumber,
+      sceneBelong: shot.sceneBelong || '',
+      shotType: shot.shotType || '',
+      shotMotion: shot.shotMotion || '',
+      visualContent: shot.visualContent || '',
+      soundEffect: shot.soundEffect || '',
+      editMethod: shot.editMethod || ''
+    }));
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${chapter.title}-clip-method-list.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    pushToast('已导出剪辑手法清单。', 'success');
+  };
+
+  const materialCompletionCheck = () => {
+    const targetIds = selectedShotIds.length > 0
+      ? new Set(selectedShotIds)
+      : (activeShot ? new Set([activeShot.id]) : new Set());
+    if (targetIds.size === 0) {
+      pushToast('请先勾选需要进行素材补齐的镜头。', 'warning');
+      return;
+    }
+
+    const targetShots = shots.filter((shot) => targetIds.has(shot.id));
+    const existingKeySet = new Set((activeFrame?.resources || []).map((res) => `${res.type}::${(res.name || '').trim()}`));
+    const missing = [];
+
+    targetShots.forEach((shot) => {
+      const entries = normalizeMaterialContentEntries(shot.materialContent);
+      entries.forEach((entry) => {
+        const key = `${entry.type}::${entry.name}`;
+        if (!existingKeySet.has(key)) {
+          existingKeySet.add(key);
+          missing.push({ ...entry, fromShotNumber: shot.shotNumber });
+        }
+      });
+
+      const sceneBelong = String(shot.sceneBelong || '').trim();
+      if (sceneBelong) {
+        const sceneKey = `scenes::${sceneBelong}`;
+        if (!existingKeySet.has(sceneKey)) {
+          existingKeySet.add(sceneKey);
+          missing.push({ type: 'scenes', name: sceneBelong, fromShotNumber: shot.shotNumber });
+        }
+      }
+    });
+
+    if (missing.length === 0) {
+      pushToast('未检测到缺失资源，当前素材已完整。', 'success');
+      return;
+    }
+
+    const createdResources = missing.map((item) => makeResource(item.type)).map((resource, index) => ({
+      ...resource,
+      name: missing[index].name,
+      subType: missing[index].type === 'characters' ? '正面全身' : '',
+      prompt: `自动补齐：来自镜头 ${missing[index].fromShotNumber}`
+    }));
+    addResourcesBatch(createdResources);
+    pushToast(`已自动创建 ${createdResources.length} 条缺失资源。`, 'success');
+  };
+
+  const generateMaterialPrompt = () => {
+    const targetIds = selectedShotIds.length > 0
+      ? new Set(selectedShotIds)
+      : (activeShot ? new Set([activeShot.id]) : new Set());
+    if (targetIds.size === 0) {
+      pushToast('请先勾选需要生成提示词的镜头。', 'warning');
+      return;
+    }
+
+    const targetShots = shots.filter((shot) => targetIds.has(shot.id));
+    const meta = targetShots.map((shot) => {
+      const resourcesForShot = normalizeMaterialContentEntries(shot.materialContent);
+      const resourceText = resourcesForShot.length > 0
+        ? resourcesForShot.map((item) => `${getResourceTypeLabel(item.type)}:${item.name}`).join('；')
+        : '无';
+      const prompt = [
+        `镜号：${shot.shotNumber}`,
+        `景别：${shot.shotType || '未填写'}`,
+        `镜头运动：${shot.shotMotion || '固定'}`,
+        `画面内容：${shot.visualContent || shot.visualDescription || '未填写'}`,
+        `所属场景：${shot.sceneBelong || shot.sceneDescription || '未填写'}`,
+        `音效：${shot.soundEffect || '无'}`,
+        `素材需求：${resourceText}`,
+        '生成要求：保持风格一致，若为图生图请尽量复用已上传资源并仅调整动作/角度。'
+      ].join('\n');
+      return {
+        shotId: shot.id,
+        shotNumber: shot.shotNumber,
+        prompt,
+        resourceText
+      };
+    });
+
+    const promptMap = Object.fromEntries(meta.map((item) => [item.shotId, item.prompt]));
+    const next = shots.map((shot) => (promptMap[shot.id]
+      ? { ...shot, prompt: promptMap[shot.id] }
+      : shot));
+    syncShotStatus(next);
+    setLastMaterialRequirementMeta(meta);
+    pushToast(`已生成 ${meta.length} 条镜头的素材提示词。`, 'success');
+  };
+
+  const exportMaterialRequirement = () => {
+    const sourceMeta = lastMaterialRequirementMeta.length > 0
+      ? lastMaterialRequirementMeta
+      : shots.map((shot) => ({
+          shotId: shot.id,
+          shotNumber: shot.shotNumber,
+          prompt: shot.prompt || '',
+          resourceText: normalizeMaterialContentEntries(shot.materialContent)
+            .map((item) => `${getResourceTypeLabel(item.type)}:${item.name}`)
+            .join('；')
+        }));
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      chapterId: chapter.id,
+      chapterTitle: chapter.title,
+      requirements: sourceMeta
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${chapter.title}-素材需求元信息.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+
+    const zip = new JSZip();
+    zip.file('素材需求元信息.json', JSON.stringify(payload, null, 2));
+    const references = (activeFrame?.resources || [])
+      .filter((item) => item?.status === 'uploaded')
+      .map((item) => `${getResourceTypeLabel(item.type)} / ${item.name} / ${item.localPath || item.fileName || '未记录路径'}`)
+      .join('\n');
+    zip.file('参考素材清单.txt', references || '暂无已上传参考素材');
+    zip.generateAsync({ type: 'blob' }).then((zipBlob) => {
+      const zipUrl = URL.createObjectURL(zipBlob);
+      const zipLink = document.createElement('a');
+      zipLink.href = zipUrl;
+      zipLink.download = `${chapter.title}-图生图参考素材包.zip`;
+      zipLink.click();
+      URL.revokeObjectURL(zipUrl);
+      setTempPackageHistory((prev) => [...prev, {
+        id: crypto.randomUUID(),
+        createdAt: Date.now(),
+        name: `${chapter.title}-图生图参考素材包.zip`
+      }]);
+    });
+    pushToast('已导出素材需求元信息。', 'success');
+  };
+
+  const cleanTempReferencePackage = () => {
+    previewUrlsRef.current.forEach((url) => safelyRevokePreview(url));
+    previewUrlsRef.current.clear();
+    setTempPackageHistory([]);
+    setLastMaterialRequirementMeta([]);
+    pushToast('已清理临时参考包记录与预览缓存。', 'success');
+  };
+
   const applyShotTemplate = (template) => {
     if (!activeShot || !template) return;
     updateShot(activeShot.id, {
@@ -1061,6 +1381,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       shotType: template.shotType,
       cameraAngle: template.cameraAngle,
       sceneDescription: template.sceneDescription,
+      visualContent: template.sceneDescription,
       visualDescription: template.visualDescription,
       editMethod: template.editMethod,
       transitionToNext: template.transitionToNext
@@ -1092,6 +1413,8 @@ const StoryboardEditor = ({ novelId, chapter }) => {
 
   const missingResources = (activeFrame?.resources || []).filter((item) => item.status !== 'uploaded');
   const uploadedResources = (activeFrame?.resources || []).filter((item) => item.status === 'uploaded');
+  const sceneLibraryOptions = uploadedResources.filter((item) => item.type === 'scenes');
+  const materialContentDraft = JSON.stringify(Array.isArray(activeFrame?.materialContent) ? activeFrame.materialContent : [], null, 2);
   const needsImageUpload = activeShot && ['L1', 'L3'].includes(activeShot.level);
   const needsVideoUpload = activeShot && activeShot.level === 'L3';
   const resourceStoragePath = buildTargetPath('characters', 'default');
@@ -1227,10 +1550,26 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                     />
                   </label>
                   <label>
+                    镜头运动
+                    <input
+                      value={activeFrame.shotMotion || ''}
+                      onChange={(event) => updateActiveFrame({ shotMotion: event.target.value })}
+                      placeholder="例如：固定 / 横拉 / 跟拍"
+                    />
+                  </label>
+                  <label>
                     机位角度
                     <input
                       value={activeFrame.cameraAngle || ''}
                       onChange={(event) => updateActiveFrame({ cameraAngle: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    所属场景
+                    <input
+                      value={activeFrame.sceneBelong || ''}
+                      onChange={(event) => updateActiveFrame({ sceneBelong: event.target.value })}
+                      placeholder="例如：试剑台"
                     />
                   </label>
                   <label>
@@ -1249,11 +1588,68 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                     />
                   </label>
                   <label className="span-2">
-                    场景描述
+                    场景描述（必填）
+                    <div className="row" style={{ marginBottom: 8, gap: 8 }}>
+                      <button type="button" className={sceneInputMode === 'manual' ? 'tab active' : 'tab'} onClick={() => setSceneInputMode('manual')}>手动填写</button>
+                      <button type="button" className={sceneInputMode === 'library' ? 'tab active' : 'tab'} onClick={() => setSceneInputMode('library')}>从资源库选择</button>
+                    </div>
+                    {sceneInputMode === 'manual' ? (
+                      <textarea
+                        className="large-input compact-input"
+                        value={activeFrame.sceneDescription || ''}
+                        placeholder="例如：空白背景 / 无场景 / Q版渐变背景"
+                        onChange={(event) => updateActiveFrame({ sceneDescription: event.target.value })}
+                      />
+                    ) : (
+                      <select
+                        defaultValue=""
+                        onChange={(event) => {
+                          const selected = sceneLibraryOptions.find((item) => item.id === event.target.value);
+                          if (selected) {
+                            updateActiveFrame({ sceneDescription: selected.prompt || selected.name || '' });
+                          }
+                        }}
+                      >
+                        <option value="">请选择场景资源（将自动填充场景描述）</option>
+                        {sceneLibraryOptions.map((item) => (
+                          <option key={item.id} value={item.id}>{item.name || '未命名场景资源'}</option>
+                        ))}
+                      </select>
+                    )}
+                  </label>
+                  <label className="span-2">
+                    画面内容
                     <textarea
                       className="large-input compact-input"
-                      value={activeFrame.sceneDescription || ''}
-                      onChange={(event) => updateActiveFrame({ sceneDescription: event.target.value })}
+                      value={activeFrame.visualContent || ''}
+                      onChange={(event) => updateActiveFrame({ visualContent: event.target.value })}
+                      placeholder="分镜核心画面描述"
+                    />
+                  </label>
+                  <label className="span-2">
+                    素材内容（JSON 数组）
+                    <textarea
+                      key={`${activeShot?.id || 'none'}-${activeFrameId}-material-content`}
+                      className="large-input compact-input"
+                      defaultValue={materialContentDraft}
+                      onBlur={(event) => {
+                        const raw = event.target.value;
+                        try {
+                          const parsed = raw.trim() ? JSON.parse(raw) : [];
+                          if (!Array.isArray(parsed)) throw new Error('素材内容必须是数组');
+                          updateActiveFrame({ materialContent: parsed });
+                        } catch (error) {
+                          pushToast('素材内容需为 JSON 数组，示例：[{"type":"character","name":"苏婉"}]', 'warning');
+                        }
+                      }}
+                    />
+                  </label>
+                  <label className="span-2">
+                    音效 / 台词 / 旁白
+                    <textarea
+                      className="large-input compact-input"
+                      value={activeFrame.soundEffect || ''}
+                      onChange={(event) => updateActiveFrame({ soundEffect: event.target.value })}
                     />
                   </label>
                   <label className="span-2">
@@ -1325,6 +1721,46 @@ const StoryboardEditor = ({ novelId, chapter }) => {
               title="导出剪辑分级表（CSV）"
             >
               导出剪辑分级表
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={generateClipMethodsForSelection}
+              title="为当前选中镜头生成剪辑手法"
+            >
+              生成剪辑手法
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={exportClipMethodList}
+              title="导出剪辑手法清单（JSON）"
+            >
+              导出剪辑手法
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={materialCompletionCheck}
+              title="检测缺失资源并自动创建"
+            >
+              素材补齐
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={generateMaterialPrompt}
+              title="为选中镜头生成素材提示词"
+            >
+              生成素材提示词
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={exportMaterialRequirement}
+              title="导出素材需求元信息 JSON"
+            >
+              导出素材元信息
             </button>
           </div>
         </div>
@@ -1463,6 +1899,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           <div>
             <h3>资源面板</h3>
             <div className="storage-path-hint">资源默认保存：{resourceStoragePath}</div>
+            <div className="storage-path-hint">临时参考包记录：{tempPackageHistory.length}</div>
             <div className="row" style={{ marginTop: 8, gap: 8 }}>
               <button type="button" className={activeSideTab === 'resources' ? 'tab active' : 'tab'} onClick={() => setActiveSideTab('resources')}>资源</button>
               <button type="button" className={activeSideTab === 'scenes' ? 'tab active' : 'tab'} onClick={() => setActiveSideTab('scenes')}>场景</button>
@@ -1471,6 +1908,17 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           <div className="row" style={{ gap: 8 }}>
             <button type="button" className="button-secondary" onClick={() => setActiveSideTab('scenes')}>场景库</button>
             <button type="button" className="button-secondary" onClick={saveCurrentShotChecklist}>保存清单</button>
+            <label className="file-button compact">
+              批量素材回传
+              <input
+                ref={batchUploadRef}
+                type="file"
+                multiple
+                accept=".png,.jpg,.jpeg,.webp,.mp4,.mov"
+                onChange={(event) => uploadResourceFileBatch(event.target.files)}
+              />
+            </label>
+            <button type="button" className="button-secondary" onClick={cleanTempReferencePackage}>一键清理临时文件</button>
             <button type="button" onClick={addResource} disabled={!activeFrame || activeSideTab !== 'resources'}>+ 资源</button>
           </div>
         </div>
@@ -1517,11 +1965,25 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                         提示词
                         <textarea className="large-input compact-input" value={resource.prompt} onChange={(event) => updateResource(resource.id, { prompt: event.target.value })} />
                       </label>
+                      {resource.type === 'characters' && (
+                        <div className="storage-path-hint" style={{ marginBottom: 8, color: '#b54708' }}>
+                          正面全身图为必填项，其余角色素材为选填项。
+                        </div>
+                      )}
                       <label className="placeholder-upload">
-                        上传资源
+                        {resource.type === 'characters' ? '上传正面全身图（必填）' : '上传资源'}
                         <input type="file" accept=".png,.jpg,.jpeg,.webp,.mp4,.mov" onChange={(event) => uploadResourceFile(resource.id, event.target.files?.[0])} />
                       </label>
+                      {resource.type === 'characters' && (
+                        <details>
+                          <summary>展开查看其他选填素材（侧面 / 背面 / 面部特写 / Q版 / 特殊角度）</summary>
+                          <div className="storage-path-hint" style={{ marginTop: 6 }}>
+                            可通过继续新增角色资源补充，不影响当前基础资源保存。
+                          </div>
+                        </details>
+                      )}
                       <div className="storage-path-hint">目标目录：{buildTargetPath(resource.type, resource.subType)}</div>
+                      <div className="storage-path-hint">状态：{resource.statusLabel || getResourceStatusLabel(resource.status)}</div>
                     </div>
                   ))}
                   {missingResources.length === 0 && <div className="empty">无缺失资源。</div>}
@@ -1564,6 +2026,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                         />
                       )}
                       <div className="storage-path-hint">本地路径：{resource.localPath || '未上传'}</div>
+                      <div className="storage-path-hint">状态：{resource.statusLabel || getResourceStatusLabel(resource.status)}</div>
                     </div>
                   ))}
                   {uploadedResources.length === 0 && <div className="empty">暂无已上传资源。</div>}

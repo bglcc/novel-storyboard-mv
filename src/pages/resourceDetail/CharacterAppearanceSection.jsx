@@ -13,10 +13,60 @@ const CharacterAppearanceSection = ({
   handleCharacterExport,
   viewList,
   viewAssets,
+  requiredViewList,
+  optionalViewList,
+  storyboardViewList,
   openPreview,
   viewInputRefs,
   handleViewUpload
-}) => (
+}) => {
+  const renderViewGroup = (title, list, emptyText = '暂无') => (
+    <div style={{ marginBottom: 14 }}>
+      <div className="label" style={{ marginBottom: 8 }}>{title}</div>
+      {list.length === 0 ? (
+        <div className="empty" style={{ marginBottom: 0 }}>{emptyText}</div>
+      ) : (
+        <div className="portrait-grid">
+          {list.map((viewAngle) => {
+            const asset = viewAssets.find((item) => item.viewAngle === viewAngle);
+            return (
+              <div key={viewAngle} className="portrait-card">
+                <button
+                  type="button"
+                  className="portrait-preview"
+                  onClick={() => {
+                    if (asset?.src) {
+                      openPreview(asset.src, viewAngle);
+                    } else {
+                      viewInputRefs.current[viewAngle]?.click();
+                    }
+                  }}
+                >
+                  {asset?.src ? <img src={asset.src} alt={viewAngle} /> : <div className="portrait-placeholder">暂无图片</div>}
+                </button>
+                <div className="portrait-meta">
+                  <span>{viewAngle}</span>
+                  <label className="file-button">
+                    上传
+                    <input
+                      type="file"
+                      accept="image/*"
+                      ref={(el) => {
+                        viewInputRefs.current[viewAngle] = el;
+                      }}
+                      onChange={handleViewUpload(viewAngle)}
+                    />
+                  </label>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
   <div className="card-grid">
     {forms.length > 1 && (
       <div className="sub-tabs">
@@ -99,48 +149,13 @@ const CharacterAppearanceSection = ({
           </button>
         </div>
       </div>
-      {viewList.length === 0 ? (
-        <div className="empty">暂无视需求，请等待分镜头AI回传。</div>
-      ) : (
-        <div className="portrait-grid">
-          {viewList.map((viewAngle) => {
-            const asset = viewAssets.find((item) => item.viewAngle === viewAngle);
-            return (
-              <div key={viewAngle} className="portrait-card">
-                <button
-                  type="button"
-                  className="portrait-preview"
-                  onClick={() => {
-                    if (asset?.src) {
-                      openPreview(asset.src, viewAngle);
-                    } else {
-                      viewInputRefs.current[viewAngle]?.click();
-                    }
-                  }}
-                >
-                  {asset?.src ? <img src={asset.src} alt={viewAngle} /> : <div className="portrait-placeholder">暂无图片</div>}
-                </button>
-                <div className="portrait-meta">
-                  <span>{viewAngle}</span>
-                  <label className="file-button">
-                    上传
-                    <input
-                      type="file"
-                      accept="image/*"
-                      ref={(el) => {
-                        viewInputRefs.current[viewAngle] = el;
-                      }}
-                      onChange={handleViewUpload(viewAngle)}
-                    />
-                  </label>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {renderViewGroup('必填（角色基础资源）', requiredViewList || [])}
+      {renderViewGroup('选填（角色扩展资源）', optionalViewList || [])}
+      {renderViewGroup('分镜头回传需求', (storyboardViewList || []).filter((item) => !(requiredViewList || []).includes(item) && !(optionalViewList || []).includes(item)), '暂无分镜头回传需求')}
+      {viewList.length === 0 && <div className="empty">暂无需求，请先上传角色基础素材。</div>}
     </div>
   </div>
-);
+  );
+};
 
 export default CharacterAppearanceSection;
