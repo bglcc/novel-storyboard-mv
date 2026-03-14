@@ -15,12 +15,34 @@ const parseLenientJson = (text) => {
 
 const pickCoverImage = (resource) => {
   if (resource?.cover) return resource.cover;
+  if (resource?.preview) return resource.preview;
+  if (resource?.image) return resource.image;
+  if (resource?.thumbnail) return resource.thumbnail;
+
   if (Array.isArray(resource?.images) && resource.images.length > 0) {
-    return resource.images[0]?.src || resource.images[0];
+    const image = resource.images.find((item) => item?.src || item?.url || item?.preview || item?.path || typeof item === 'string');
+    if (image) {
+      if (typeof image === 'string') return image;
+      return image.src || image.url || image.preview || image.path || '';
+    }
   }
+
+  const characterViews = Array.isArray(resource?.form)
+    ? resource.form.flatMap((form) => form?.viewAssets || [])
+    : [];
+  const metaViews = Array.isArray(resource?.meta?.viewAssets) ? resource.meta.viewAssets : [];
+  const sceneImages = Array.isArray(resource?.meta?.sceneVariants)
+    ? resource.meta.sceneVariants.flatMap((variant) => variant?.images || [])
+    : [];
+  const propImages = Array.isArray(resource?.meta?.propVariants)
+    ? resource.meta.propVariants.flatMap((variant) => variant?.images || [])
+    : [];
+
+  const candidate = [...characterViews, ...metaViews, ...sceneImages, ...propImages]
+    .find((item) => item?.src || item?.url || item?.preview || item?.path);
+  if (candidate) return candidate.src || candidate.url || candidate.preview || candidate.path || '';
   return '';
 };
-
 const normalizeSearchToken = (value) =>
   String(value || '')
     .toLowerCase()

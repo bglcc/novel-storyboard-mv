@@ -6,6 +6,17 @@ const isMissing = (value) => {
   return String(value ?? '').trim() === '';
 };
 
+const getFieldValueForValidation = (shot, field) => {
+  if (field === 'duration') {
+    // 兼容旧字段：界面里常填写 shotTime，但校验配置使用 duration
+    return shot?.duration ?? shot?.shotDuration ?? shot?.shotTime ?? '';
+  }
+  return shot?.[field];
+};
+
+const hasAssetUploaded = (asset = {}) =>
+  !isMissing(asset?.fileName) || !isMissing(asset?.localPath) || !isMissing(asset?.remoteUrl) || !isMissing(asset?.preview);
+
 const countUploadedByType = (resources = []) =>
   resources.reduce((acc, resource) => {
     if (resource?.status !== 'uploaded') return acc;
@@ -16,11 +27,28 @@ const countUploadedByType = (resources = []) =>
 
 const toResourceMessage = (rule) => `${RESOURCE_TYPE_LABELS[rule.type] || rule.type}资源需至少关联 ${rule.min} 个`;
 
+
+const getMissingResourceLabels = (resources = []) => {
+  const missingSet = new Set();
+  resources.forEach((resource) => {
+    if (!resource) return;
+    if (resource.status === 'uploaded') return;
+    const typeLabel = RESOURCE_TYPE_LABELS[resource.type] || resource.type || '资源';
+    const name = String(resource.name || '').trim();
+    if (!name) {
+      missingSet.add(`${typeLabel}资源未补齐`);
+      return;
+    }
+    missingSet.add(`${typeLabel}资源「${name}」未补齐`);
+  });
+  return Array.from(missingSet);
+};
+
 const validateResourceRequirements = (requirements = {}, uploadedByType = {}) => {
   const missingMessages = [];
   const allOf = requirements?.allOf || [];
   const anyOf = requirements?.anyOf || [];
-  const optionalTypes = new Set(['characters', 'scenes']);
+  const optionalTypes = new Set([]);
 
   allOf.forEach((rule) => {
     if (optionalTypes.has(rule.type)) return;
@@ -48,7 +76,7 @@ export const getShotValidation = (shot) => {
   const uploadedByType = countUploadedByType(resources);
 
   const missingFields = (config.requiredFields || [])
-    .filter((field) => isMissing(shot?.[field]))
+    .filter((field) => isMissing(getFieldValueForValidation(shot, field)))
     .map((field) => `${FIELD_LABELS[field] || field}未填写`);
 
   if (isMissing(shot?.sceneDescription)) {
@@ -56,12 +84,13 @@ export const getShotValidation = (shot) => {
   }
 
   const missingAssets = (config.requiredAssets || [])
-    .filter((asset) => isMissing(shot?.[asset]?.fileName))
+    .filter((asset) => !hasAssetUploaded(shot?.[asset]))
     .map((asset) => `${FIELD_LABELS[asset] || asset}未上传`);
 
-  const missingResources = validateResourceRequirements(config.resourceRequirements, uploadedByType);
+  const missingResourcesByRule = validateResourceRequirements(config.resourceRequirements, uploadedByType);
+  const missingResourcesByStatus = getMissingResourceLabels(resources);
 
-  const missingLabels = [...missingFields, ...missingAssets, ...missingResources];
+  const missingLabels = [...missingFields, ...missingAssets, ...missingResourcesByRule, ...missingResourcesByStatus];
 
   return {
     isValid: missingLabels.length === 0,

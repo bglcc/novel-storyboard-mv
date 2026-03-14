@@ -1,0 +1,7 @@
+<svg width="240" height="160" viewBox="0 0 240 160" xmlns="http://www.w3.org/2000/svg">
+  <rect width="240" height="160" rx="12" fill="#F8FAFC"/>
+  <rect x="20" y="32" width="200" height="96" rx="10" fill="#BFDBFE"/>
+  <rect x="34" y="46" width="70" height="58" rx="8" fill="#60A5FA"/>
+  <rect x="116" y="58" width="92" height="46" rx="8" fill="#3B82F6"/>
+  <text x="120" y="150" text-anchor="middle" fill="#1D4ED8" font-size="14" font-family="Arial">场景占位</text>
+</svg>

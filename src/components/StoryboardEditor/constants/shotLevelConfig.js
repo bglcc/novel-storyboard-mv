@@ -2,11 +2,11 @@ export const SHOT_LEVEL_CONFIG = {
   L1: {
     requiredFields: ['title', 'shotType', 'cameraAngle'],
     resourceRequirements: { anyOf: [{ type: 'scenes', min: 1 }, { type: 'characters', min: 1 }] },
-    requiredAssets: ['imageAsset']
+    requiredAssets: []
   },
   L2: {
     requiredFields: ['title', 'shotType'],
-    resourceRequirements: { allOf: [{ type: 'scenes', min: 1 }, { type: 'characters', min: 1 }, { type: 'props', min: 1 }] },
+    resourceRequirements: { allOf: [{ type: 'scenes', min: 1 }, { type: 'characters', min: 1 }] },
     requiredAssets: []
   },
   L3: {
@@ -14,16 +14,15 @@ export const SHOT_LEVEL_CONFIG = {
     resourceRequirements: {
       allOf: [
         { type: 'characters', min: 1 },
-        { type: 'scenes', min: 1 },
-        { type: 'props', min: 1 }
+        { type: 'scenes', min: 1 }
       ]
     },
-    requiredAssets: ['imageAsset', 'videoAsset']
+    requiredAssets: []
   },
   L4: {
     requiredFields: ['title', 'shotType', 'duration', 'visualDescription', 'editMethod'],
     resourceRequirements: { allOf: [{ type: 'characters', min: 2 }, { type: 'scenes', min: 1 }] },
-    requiredAssets: ['imageAsset']
+    requiredAssets: []
   }
 };
 

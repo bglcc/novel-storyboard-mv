@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import JSZip from 'jszip';
 import { useData } from '../context/DataContext';
 import { saveFileWithFallback, sha256, validateFile } from '../utils/localFileBridge';
@@ -11,9 +10,6 @@ import { buildImportValidationMessage, validateImportedShotList } from './Storyb
 import { getResourceStatusLabel } from '../constants/resourceStatusLabelDict';
 import { ResourceService } from '../services/ResourceService';
 import { ResourceErrorCodes } from '../constants/errorCodes';
-import characterPlaceholder from '../assets/placeholders/character-placeholder.svg';
-import scenePlaceholder from '../assets/placeholders/scene-placeholder.svg';
-import propPlaceholder from '../assets/placeholders/prop-placeholder.svg';
 
 const levels = [
   { value: 'L1', label: 'L1 静态单层' },
@@ -67,36 +63,6 @@ const baseFrameFields = {
   editMethod: ''
 };
 
-const CHARACTER_DEFAULT_SUBTYPE = '正面全身';
-
-const makeResourceRequirement = (resource = {}) => ({
-  id: resource.id || crypto.randomUUID(),
-  type: String(resource.type || 'props'),
-  resourceName: String(resource.name || ''),
-  prompt: String(resource.prompt || ''),
-  anchorImageRef: String(resource.id || ''),
-  shotRole: String(resource.shotRole || ''),
-  notes: String(resource.notes || ''),
-  styleTags: Array.isArray(resource.styleTags) ? resource.styleTags : [],
-  variantLabel: String(resource.variantLabel || resource.subType || '')
-});
-
-const ensureResourceStructure = (resource = {}) => {
-  const normalizedSubType = resource.type === 'characters'
-    ? String(resource.subType || CHARACTER_DEFAULT_SUBTYPE)
-    : String(resource.subType || '');
-  const requirement = {
-    ...makeResourceRequirement(resource),
-    ...(resource.requirement || {})
-  };
-  return {
-    ...resource,
-    subType: normalizedSubType,
-    requirement,
-    statusLabel: getResourceStatusLabel(resource.status || 'missing')
-  };
-};
-
 const makeOutlineItem = (index) => ({
   id: crypto.randomUUID(),
   order: index + 1,
@@ -108,8 +74,7 @@ const makeResource = (type = 'characters') => ({
   id: crypto.randomUUID(),
   type,
   name: '',
-  subType: type === 'characters' ? CHARACTER_DEFAULT_SUBTYPE : '',
-  requirement: makeResourceRequirement({ type }),
+  subType: '',
   prompt: '',
   status: 'missing',
   statusLabel: getResourceStatusLabel('missing'),
@@ -122,6 +87,10 @@ const makeResource = (type = 'characters') => ({
 
 const validateCharacterResource = (resource = {}) => {
   if (resource?.type !== 'characters') return { ok: true };
+  const subType = String(resource?.subType || '');
+  if (!subType.includes('正面') || !subType.includes('全身')) {
+    return { ok: false, message: '角色资源创建时请先在二级资源类型中填写“正面全身”。' };
+  }
   if (resource?.status === 'uploaded' && resource?.fileName) return { ok: true };
   if (resource?.status === 'uploaded' || resource?.fileName) return { ok: true };
   return { ok: false, message: '角色资源创建时必须上传「正面全身图」。' };
@@ -191,28 +160,13 @@ const normalizeResourceName = ({ type, name, resources, currentId }) => {
 
 const readFilePreview = async (file) => {
   if (!file) return '';
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(new Error('预览读取失败'));
-    reader.readAsDataURL(file);
-  });
+  return URL.createObjectURL(file);
 };
 
 const safelyRevokePreview = (url) => {
   if (typeof url === 'string' && url.startsWith('blob:')) {
     URL.revokeObjectURL(url);
   }
-};
-
-const dataUrlToBlob = (dataUrl) => {
-  const [meta, base64] = String(dataUrl || '').split(',');
-  if (!meta || !base64) return null;
-  const mime = (meta.match(/data:(.*?);base64/) || [])[1] || 'image/png';
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
 };
 
 const parseLenientJson = (text) => {
@@ -278,168 +232,42 @@ const parseResourceAbbr = (value) => {
 };
 
 const normalizeMaterialContentEntries = (value) => {
-  const rawEntries = Array.isArray(value)
-    ? value
-    : (typeof value === 'string' && value.trim()
-      ? value.split(/[;；,，\n]/).map((item) => item.trim()).filter(Boolean)
-      : []);
-
-  return rawEntries
+  if (!Array.isArray(value)) return [];
+  return value
     .map((entry) => {
+      if (!entry || typeof entry !== 'object') return null;
       const typeMap = {
         character: 'characters',
         characters: 'characters',
-        '角色': 'characters',
         scene: 'scenes',
         scenes: 'scenes',
-        '场景': 'scenes',
         prop: 'props',
-        props: 'props',
-        '道具': 'props'
+        props: 'props'
       };
-
-      if (typeof entry === 'string') {
-        const parsed = entry.split(/[:：]/).map((item) => item.trim()).filter(Boolean);
-        if (parsed.length >= 2) {
-          const [rawType, ...names] = parsed;
-          const type = typeMap[String(rawType || '').toLowerCase()] || typeMap[rawType] || 'props';
-          return { type, name: names.join(':').trim() };
-        }
-        return { type: 'props', name: entry.trim() };
-      }
-
-      if (!entry || typeof entry !== 'object') return null;
       const rawType = String(entry.type || '').trim().toLowerCase();
-      const type = typeMap[rawType] || typeMap[String(entry.type || '').trim()] || rawType;
-      const name = String(entry.name || entry.resourceName || entry.label || '').trim();
+      const type = typeMap[rawType] || rawType;
+      const name = String(entry.name || '').trim();
       if (!type || !name) return null;
       return { type, name };
     })
-    .filter((entry) => entry?.name);
+    .filter(Boolean);
 };
 
-const getPlaceholderByType = (type) => {
-  if (type === 'scenes') return scenePlaceholder;
-  if (type === 'props') return propPlaceholder;
-  return characterPlaceholder;
+const normalizeResourceStatus = (status) => {
+  const raw = String(status || '').trim();
+  if (!raw) return 'missing';
+  if (raw === 'uploaded' || raw === '已完成' || raw === 'available') return 'uploaded';
+  return 'missing';
 };
 
-const normalizeResourceType = (value) => {
-  const typeMap = {
-    character: 'characters',
-    characters: 'characters',
-    '角色': 'characters',
-    scene: 'scenes',
-    scenes: 'scenes',
-    '场景': 'scenes',
-    prop: 'props',
-    props: 'props',
-    '道具': 'props'
-  };
-  const normalized = String(value || '').trim().toLowerCase();
-  return typeMap[normalized] || typeMap[String(value || '').trim()] || normalized;
-};
-
-const normalizeShotLookupKey = (value) => String(value || '').trim().toLowerCase();
-
-const collectImportedPromptItems = (parsed) => {
-  if (Array.isArray(parsed)) return parsed;
-  if (Array.isArray(parsed?.requirements)) return parsed.requirements;
-  if (Array.isArray(parsed?.resourcePrompts)) return parsed.resourcePrompts;
-  if (Array.isArray(parsed?.items)) return parsed.items;
-  return [];
-};
-
-const toImportedResourcePrompt = (entry = {}) => {
-  const type = normalizeResourceType(entry?.type || entry?.resourceType || 'props');
-  const resourceName = String(entry?.resourceName || entry?.name || entry?.label || '').trim();
-  if (!type || !resourceName) return null;
-  return {
-    ...entry,
-    type,
-    resourceName,
-    prompt: String(entry?.prompt || ''),
-    anchorImageRef: String(entry?.anchorImageRef || entry?.anchor || ''),
-    variantLabel: String(entry?.variantLabel || entry?.assetProfile || '').trim()
-  };
-};
-
-const normalizeImportedPromptMap = (parsed) => {
-  const items = collectImportedPromptItems(parsed);
-  const normalizedMap = new Map();
-
-  items.forEach((item) => {
-    const shotKey = normalizeShotLookupKey(item?.shotId || item?.shotNumber || item?.shotNo || item?.shot_no || item?.shot);
-    if (!shotKey) return;
-    const base = normalizedMap.get(shotKey) || {
-      prompt: '',
-      videoPromptDraft: '',
-      resourcePrompts: []
-    };
-
-    const nestedResourcePrompts = Array.isArray(item?.resourcePrompts)
-      ? item.resourcePrompts.map(toImportedResourcePrompt).filter(Boolean)
-      : [];
-    const inlineResourcePrompt = toImportedResourcePrompt(item);
-    const mergedResourcePrompts = [...base.resourcePrompts, ...nestedResourcePrompts, ...(inlineResourcePrompt ? [inlineResourcePrompt] : [])];
-
-    normalizedMap.set(shotKey, {
-      prompt: String(item?.prompt || base.prompt || ''),
-      videoPromptDraft: String(item?.videoPromptDraft || base.videoPromptDraft || ''),
-      resourcePrompts: mergedResourcePrompts
-    });
-  });
-
-  return normalizedMap;
-};
-
-
-const CHARACTER_REQUIRED_VIEW_ANGLE = '正面-全身-站立';
-
-const hasCharacterRequiredView = (resource = {}) => {
-  const formViews = Array.isArray(resource?.form)
-    ? resource.form.flatMap((form) => form?.viewAssets || [])
-    : [];
-  const metaViews = Array.isArray(resource?.meta?.viewAssets) ? resource.meta.viewAssets : [];
-  const allViews = [...formViews, ...metaViews].map((asset) => String(asset?.viewAngle || '').trim()).filter(Boolean);
-  if (allViews.some((view) => view === CHARACTER_REQUIRED_VIEW_ANGLE || view.startsWith('正面-全身'))) return true;
-  if (Array.isArray(resource?.images) && resource.images.length > 0) {
-    return allViews.length === 0;
+const collectResourcePreview = (resource = {}) => {
+  if (resource.preview) return resource.preview;
+  if (resource.cover) return resource.cover;
+  if (Array.isArray(resource.images) && resource.images.length > 0) {
+    const first = resource.images[0];
+    return typeof first === 'string' ? first : first?.src || '';
   }
-  return false;
-};
-
-const getResourceTextMeta = (resource = {}) => ({
-  name: String(resource?.name || resource?.title || resource?.label || resource?.resourceName || '').trim(),
-  type: normalizeResourceType(resource?.type || resource?.category || resource?.resourceType || 'props')
-});
-
-const pickResourceCover = (resource = {}) => {
-  const direct = resource?.preview || resource?.image || resource?.cover || resource?.thumbnail || '';
-  if (direct) return direct;
-
-  const fromImages = Array.isArray(resource?.images)
-    ? resource.images.find((item) => item?.src || item?.url || item?.preview || item?.path || typeof item === 'string')
-    : null;
-  if (fromImages) {
-    if (typeof fromImages === 'string') return fromImages;
-    return fromImages.src || fromImages.url || fromImages.preview || fromImages.path || '';
-  }
-
-  const fromCharacterViews = Array.isArray(resource?.form)
-    ? resource.form.flatMap((form) => form?.viewAssets || [])
-    : [];
-  const fromMetaViews = Array.isArray(resource?.meta?.viewAssets) ? resource.meta.viewAssets : [];
-  const fromSceneVariants = Array.isArray(resource?.meta?.sceneVariants)
-    ? resource.meta.sceneVariants.flatMap((variant) => variant?.images || [])
-    : [];
-  const fromPropVariants = Array.isArray(resource?.meta?.propVariants)
-    ? resource.meta.propVariants.flatMap((variant) => variant?.images || [])
-    : [];
-
-  const candidate = [...fromCharacterViews, ...fromMetaViews, ...fromSceneVariants, ...fromPropVariants]
-    .find((item) => item?.src || item?.url || item?.preview || item?.path);
-  return candidate?.src || candidate?.url || candidate?.preview || candidate?.path || '';
+  return '';
 };
 
 const pickUnknownFields = (source = {}, knownKeys = []) => {
@@ -450,14 +278,14 @@ const pickUnknownFields = (source = {}, knownKeys = []) => {
 };
 
 const StoryboardEditor = ({ novelId, chapter }) => {
-  const navigate = useNavigate();
-  const { data, updateChapter, appendResourceOperationLog, upsertResource } = useData();
+  const { data, updateChapter, appendResourceOperationLog } = useData();
   const [activeOutlineId, setActiveOutlineId] = useState(chapter.storyboardOutlineItems?.[0]?.id || '');
   const [activeShotId, setActiveShotId] = useState(chapter.storyboardShots?.[0]?.id || '');
   const [activeFrameId, setActiveFrameId] = useState('main');
   const [zoomPreview, setZoomPreview] = useState(null);
   const [highlightIncompleteShotId, setHighlightIncompleteShotId] = useState('');
   const [draggingShotId, setDraggingShotId] = useState('');
+  const [activeSideTab, setActiveSideTab] = useState('resources');
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [showTemplateMenu, setShowTemplateMenu] = useState(false);
   const [toasts, setToasts] = useState([]);
@@ -465,16 +293,10 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const [sceneInputMode, setSceneInputMode] = useState('manual');
   const [lastMaterialRequirementMeta, setLastMaterialRequirementMeta] = useState([]);
   const [tempPackageHistory, setTempPackageHistory] = useState([]);
-  const [activeResourceId, setActiveResourceId] = useState('');
   const replaceInputRef = useRef(null);
   const batchUploadRef = useRef(null);
   const outlineUploadRef = useRef(null);
-  const promptUploadRef = useRef(null);
-  const resourceTaskUploadRefs = useRef({});
-  const uploadedReplaceUploadRefs = useRef({});
-  const videoTaskUploadRef = useRef(null);
   const previewUrlsRef = useRef(new Set());
-  const normalizedChapterRef = useRef('');
   const [expandedFolders, setExpandedFolders] = useState({
     missing: true,
     uploaded: false,
@@ -494,12 +316,11 @@ const StoryboardEditor = ({ novelId, chapter }) => {
 
   const activeShot = useMemo(() => shots.find((item) => item.id === activeShotId) || null, [shots, activeShotId]);
 
-  const activeFrame = useMemo(() => activeShot || null, [activeShot]);
-
-  const canImportPrompt = Boolean(chapter?.editingWorkflow?.materialPromptGeneratedAt);
-  const canGenerateVideoPrompt = Boolean(chapter?.editingWorkflow?.materialPromptImportedAt);
-  const promptStage = String(chapter?.editingWorkflow?.promptStage || '').trim();
-  const workflowStage = promptStage || (canImportPrompt ? 'material_prompt' : 'outline_confirmed');
+  const activeFrame = useMemo(() => {
+    if (!activeShot) return null;
+    if (activeFrameId === 'main' || !activeShot.keyframesEnabled) return activeShot;
+    return activeShot.keyframes?.find((frame) => frame.id === activeFrameId) || activeShot;
+  }, [activeFrameId, activeShot]);
 
   const groupedShots = useMemo(
     () =>
@@ -510,50 +331,6 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       })),
     [outlineItems, shots]
   );
-
-  const visibleShots = useMemo(
-    () => groupedShots.flatMap((group) => group.shots || []),
-    [groupedShots]
-  );
-
-  const canGenerateMaterialPrompt = useMemo(() => {
-    const targetShots = visibleShots.length > 0 ? visibleShots : shots;
-    if (!targetShots.length) return false;
-    return targetShots.every((shot) => shot.completed || getShotValidation(shot).isValid);
-  }, [shots, visibleShots]);
-
-  const libraryResources = useMemo(() => {
-    const pool = [];
-    ['characters', 'scenes', 'props'].forEach((type) => {
-      const items = Array.isArray(data?.resources?.[type]) ? data.resources[type] : [];
-      items.forEach((item) => {
-        const meta = getResourceTextMeta({ ...item, type });
-        if (!meta.name) return;
-        const firstImage = Array.isArray(item?.images) ? item.images[0] : null;
-        const preview = pickResourceCover(item);
-        const baseAvailable = Boolean(
-          item?.isAvailable ||
-          (typeof item?.status === 'string' && ['已完成', 'ready', 'uploaded'].includes(item.status)) ||
-          (Array.isArray(item?.images) && item.images.length > 0) ||
-          preview
-        );
-        const available = baseAvailable;
-        pool.push({
-          ...item,
-          id: item?.id || crypto.randomUUID(),
-          type,
-          name: meta.name,
-          status: available ? 'uploaded' : 'missing',
-          statusLabel: getResourceStatusLabel(available ? 'uploaded' : 'missing'),
-          preview,
-          fileName: item?.fileName || firstImage?.fileName || ''
-        });
-      });
-    });
-    return pool;
-  }, [data?.resources]);
-
-
 
   const pushToast = (message, type = 'info') => {
     const id = crypto.randomUUID();
@@ -578,67 +355,6 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     const availableIds = new Set(shots.map((shot) => shot.id));
     setSelectedShotIds((prev) => prev.filter((shotId) => availableIds.has(shotId)));
   }, [shots]);
-
-  useEffect(() => {
-    if (!shots.length) return;
-    const chapterKey = `${chapter.id}-${shots.length}`;
-    if (normalizedChapterRef.current === chapterKey) return;
-
-    let changed = false;
-    const nextShots = shots.map((shot) => {
-      let shotChanged = false;
-      const nextResources = (shot.resources || []).map((resource) => {
-        const normalized = ensureResourceStructure(resource);
-        if (
-          normalized.subType !== resource.subType
-          || normalized.statusLabel !== resource.statusLabel
-          || (normalized.requirement?.resourceName || '') !== (resource.requirement?.resourceName || '')
-          || (normalized.requirement?.type || '') !== (resource.requirement?.type || '')
-          || (normalized.requirement?.prompt || '') !== (resource.requirement?.prompt || '')
-        ) {
-          changed = true;
-          shotChanged = true;
-          return normalized;
-        }
-        return resource;
-      });
-      return shotChanged ? { ...shot, resources: nextResources } : shot;
-    });
-
-    normalizedChapterRef.current = chapterKey;
-    if (changed) syncShotStatus(nextShots);
-  }, [chapter.id]);
-
-  useEffect(() => {
-    if (!shots.length || !libraryResources.length) return;
-    let changed = false;
-    const nextShots = shots.map((shot) => {
-      let shotChanged = false;
-      const nextResources = (shot.resources || []).map((resource) => {
-        const name = String(resource?.name || '').trim().toLowerCase();
-        if (!name) return resource;
-        const match = libraryResources.find((item) => item.type === resource.type && String(item.name || '').trim().toLowerCase() === name);
-        if (!match) return resource;
-        const nextStatus = match.status === 'uploaded' ? 'uploaded' : resource.status;
-        const nextPreview = match.preview || resource.preview || (nextStatus === 'uploaded' ? '' : getPlaceholderByType(resource.type));
-        const nextFileName = match.fileName || resource.fileName || '';
-        if (nextStatus !== resource.status || nextPreview !== resource.preview || nextFileName !== resource.fileName) {
-          changed = true;
-          shotChanged = true;
-          return {
-            ...resource,
-            status: nextStatus,
-            statusLabel: getResourceStatusLabel(nextStatus),
-            preview: nextPreview,
-            fileName: nextFileName
-          };
-        }
-        return resource;
-      });
-      return shotChanged ? { ...shot, resources: nextResources } : shot;
-    });
-    if (changed) syncShotStatus(nextShots);
-  }, [libraryResources]);
 
   const activeLevelRequiredFields = useMemo(() => {
     const level = activeShot?.level || 'L1';
@@ -771,303 +487,6 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     }));
   };
 
-
-  const findResourceMatch = (entry, pool = []) => {
-    const normalizedName = String(entry?.name || '').trim().toLowerCase();
-    if (!normalizedName) return null;
-    const exact = pool.find((item) => item.type === entry.type && String(item.name || '').trim().toLowerCase() === normalizedName);
-    if (exact) return exact;
-    return pool.find(
-      (item) => item.type === entry.type && (String(item.name || '').includes(entry.name) || entry.name.includes(String(item.name || '')))
-    );
-  };
-
-  const buildResourceByEntry = (entry, sourceMatch = null, contextShot = null) => ({
-    ...makeResource(entry.type),
-    name: entry.name,
-    subType: entry.type === 'characters' ? '正面全身' : '',
-    prompt: contextShot ? `镜号 ${contextShot.shotNumber}：${contextShot.visualContent || contextShot.synopsis || ''}` : '',
-    status: sourceMatch ? 'uploaded' : 'missing',
-    statusLabel: getResourceStatusLabel(sourceMatch ? 'uploaded' : 'missing'),
-    preview: sourceMatch?.preview || (!sourceMatch ? getPlaceholderByType(entry.type) : ''),
-    fileName: sourceMatch?.fileName || '',
-    localPath: sourceMatch?.localPath || '',
-    remoteUrl: sourceMatch?.remoteUrl || '',
-    updatedAt: Date.now(),
-    matchedBy: sourceMatch ? 'library' : 'placeholder'
-  });
-
-
-  const getShotResourceGroups = (shot) => {
-    const resources = Array.isArray(shot?.resources) ? shot.resources : [];
-    return {
-      characters: resources.filter((item) => item.type === 'characters').slice(0, 5),
-      scenes: resources.filter((item) => item.type === 'scenes').slice(0, 1),
-      props: resources.filter((item) => item.type === 'props')
-    };
-  };
-
-
-  const inferCharacterViewAngleFromFileName = (fileName = '') => {
-    const raw = String(fileName || '').trim();
-    if (!raw) return CHARACTER_REQUIRED_VIEW_ANGLE;
-    const normalized = raw.replace(/\.[^.]+$/, '');
-    const segments = normalized.split(/[-_]/).map((item) => item.trim()).filter(Boolean);
-    const angleSegment = segments.find((item) => ['正面', '侧面', '背面'].includes(item)) || '正面';
-    const shotSegment = segments.find((item) => ['全身', '中景', '半身', '面部特写', '特写'].includes(item)) || '全身';
-    return `${angleSegment}-${shotSegment}-站立`;
-  };
-
-  const buildNamedSceneVariants = (resourceName = '', preview = '', fileName = '') => ([{
-    id: crypto.randomUUID(),
-    name: resourceName || '未命名场景',
-    imageRequirements: [resourceName || '场景主图'],
-    images: preview ? [{ id: crypto.randomUUID(), label: resourceName || '场景主图', src: preview, fileName }] : [],
-    updatedAt: Date.now()
-  }]);
-
-  const buildNamedPropVariants = (resourceName = '', preview = '', fileName = '') => ([{
-    id: crypto.randomUUID(),
-    name: resourceName || '未命名道具',
-    imageRequirements: [resourceName || '道具主图'],
-    images: preview ? [{ id: crypto.randomUUID(), label: resourceName || '道具主图', src: preview, fileName }] : [],
-    updatedAt: Date.now()
-  }]);
-
-  const syncUploadedResourceToLibrary = (resource, file, preview) => {
-    if (!resource?.type || !resource?.name) return;
-    const type = resource.type;
-    const fileName = file?.name || resource.fileName || '';
-    const imageEntry = {
-      id: crypto.randomUUID(),
-      src: preview || '',
-      fileName
-    };
-
-    if (type === 'characters') {
-      const { baseName, variantRequirement } = parseCharacterDemandVariant(resource.name);
-      const viewAngle = variantRequirement || inferCharacterViewAngleFromFileName(fileName);
-      const characterPool = Array.isArray(data?.resources?.characters) ? data.resources.characters : [];
-      const baseCharacter = characterPool.find((item) => String(item?.name || '').trim().toLowerCase() === baseName.toLowerCase());
-      const targetCharacter = baseCharacter || resource;
-      const currentForm = Array.isArray(targetCharacter?.form) && targetCharacter.form.length > 0
-        ? targetCharacter.form[0]
-        : { id: crypto.randomUUID(), name: '默认形态', viewRequirements: [], viewAssets: [] };
-      const currentRequirements = Array.isArray(currentForm?.viewRequirements) ? currentForm.viewRequirements : [];
-      const nextRequirements = [CHARACTER_REQUIRED_VIEW_ANGLE, ...currentRequirements, ...(variantRequirement ? [variantRequirement] : [])]
-        .filter(Boolean)
-        .filter((value, index, array) => array.indexOf(value) === index);
-      const nextViewAssets = [
-        ...(Array.isArray(currentForm?.viewAssets) ? currentForm.viewAssets : []),
-        {
-          id: crypto.randomUUID(),
-          viewAngle,
-          fileName,
-          src: preview || '',
-          uploadedAt: new Date().toISOString()
-        }
-      ];
-
-      upsertResource(type, {
-        id: targetCharacter.id || resource.id,
-        type,
-        name: targetCharacter.name || baseName || resource.name,
-        aliases: Array.isArray(targetCharacter.aliases) ? targetCharacter.aliases : [],
-        description: resource.prompt || targetCharacter.description || resource.name,
-        status: '已完成',
-        isAvailable: nextRequirements.includes(CHARACTER_REQUIRED_VIEW_ANGLE),
-        images: [imageEntry],
-        image: preview || '',
-        preview: preview || '',
-        fileName,
-        form: [{
-          ...currentForm,
-          id: currentForm.id || crypto.randomUUID(),
-          name: currentForm.name || '默认形态',
-          viewRequirements: nextRequirements,
-          viewAssets: nextViewAssets
-        }],
-        meta: {
-          ...(targetCharacter.meta || {}),
-          viewRequirements: nextRequirements,
-          viewAssets: nextViewAssets
-        },
-        updatedAt: Date.now()
-      });
-      return;
-    }
-
-    const typedMeta = type === 'scenes'
-      ? { sceneVariants: buildNamedSceneVariants(resource.name, preview || '', fileName) }
-      : (type === 'props'
-        ? { propVariants: buildNamedPropVariants(resource.name, preview || '', fileName) }
-        : {});
-
-    upsertResource(type, {
-      id: resource.id,
-      type,
-      name: resource.name,
-      aliases: [],
-      description: resource.prompt || resource.name,
-      status: '已完成',
-      isAvailable: true,
-      images: [imageEntry],
-      image: preview || '',
-      preview: preview || '',
-      fileName,
-      updatedAt: Date.now(),
-      meta: typedMeta
-    });
-  };
-
-  const mergeShotResources = (shot, fallbackResources = []) => {
-    const existing = Array.isArray(shot.resources) ? shot.resources : [];
-    const merged = [...existing];
-    const existingKey = new Set(existing.map((res) => `${res.type}::${String(res.name || '').trim().toLowerCase()}`));
-    fallbackResources.forEach((res) => {
-      const key = `${res.type}::${String(res.name || '').trim().toLowerCase()}`;
-      if (!existingKey.has(key)) {
-        existingKey.add(key);
-        merged.push(res);
-      }
-    });
-    return merged;
-  };
-
-  const collectResourceDemandEntries = (shot = {}) => {
-    const fromMaterial = normalizeMaterialContentEntries(shot.materialContent);
-    const fromResources = (Array.isArray(shot.resources) ? shot.resources : [])
-      .map((item) => ({ type: normalizeResourceType(item?.type), name: String(item?.name || '').trim() }))
-      .filter((item) => item.name);
-    const fromScene = String(shot.sceneBelong || '').trim() ? [{ type: 'scenes', name: String(shot.sceneBelong).trim() }] : [];
-    const unique = new Map();
-    [...fromMaterial, ...fromResources, ...fromScene].forEach((item) => {
-      const key = `${item.type}::${item.name.toLowerCase()}`;
-      if (!unique.has(key)) unique.set(key, item);
-    });
-    return Array.from(unique.values());
-  };
-
-
-  const parseCharacterDemandVariant = (name = '') => {
-    const normalized = String(name || '').trim();
-    if (!normalized) return { baseName: '', variantRequirement: '' };
-    const segments = normalized.split(/[-—–_]+/).map((item) => item.trim()).filter(Boolean);
-    if (segments.length <= 1) return { baseName: normalized, variantRequirement: '' };
-    const [baseName, ...rest] = segments;
-    return {
-      baseName: baseName || normalized,
-      variantRequirement: rest.join('-')
-    };
-  };
-
-  const appendCharacterViewRequirement = (resource = {}, requirement = '') => {
-    const normalizedRequirement = String(requirement || '').trim();
-    if (!normalizedRequirement) return resource;
-
-    const metaViewRequirements = Array.isArray(resource?.meta?.viewRequirements)
-      ? resource.meta.viewRequirements
-      : [];
-    const nextMetaViewRequirements = metaViewRequirements.includes(normalizedRequirement)
-      ? metaViewRequirements
-      : [...metaViewRequirements, normalizedRequirement];
-
-    const existingForms = Array.isArray(resource?.form) && resource.form.length > 0
-      ? resource.form
-      : [{ id: crypto.randomUUID(), name: '默认形态', viewRequirements: [], viewAssets: [] }];
-
-    const nextForms = existingForms.map((form, index) => {
-      if (index !== 0) return form;
-      const currentRequirements = Array.isArray(form?.viewRequirements) ? form.viewRequirements : [];
-      return {
-        ...form,
-        viewRequirements: currentRequirements.includes(normalizedRequirement)
-          ? currentRequirements
-          : [...currentRequirements, normalizedRequirement],
-        viewAssets: Array.isArray(form?.viewAssets) ? form.viewAssets : []
-      };
-    });
-
-    return {
-      ...resource,
-      form: nextForms,
-      meta: {
-        ...(resource?.meta || {}),
-        viewRequirements: nextMetaViewRequirements,
-        viewAssets: Array.isArray(resource?.meta?.viewAssets) ? resource.meta.viewAssets : []
-      }
-    };
-  };
-
-  const createLibraryDemandsForShots = (targetShots = []) => {
-    const created = [];
-    const seen = new Set();
-    targetShots.forEach((shot) => {
-      const entries = collectResourceDemandEntries(shot);
-      entries.forEach((entry) => {
-        const key = `${entry.type}::${entry.name.toLowerCase()}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-
-        const sameTypeResources = Array.isArray(data?.resources?.[entry.type]) ? data.resources[entry.type] : [];
-        const exists = sameTypeResources.some((item) => String(item?.name || '').trim().toLowerCase() === entry.name.toLowerCase());
-        if (exists) return;
-
-        if (entry.type === 'characters') {
-          const { baseName, variantRequirement } = parseCharacterDemandVariant(entry.name);
-          const baseCharacter = sameTypeResources.find((item) => String(item?.name || '').trim().toLowerCase() === baseName.toLowerCase());
-
-          if (baseCharacter && variantRequirement) {
-            const patchedCharacter = appendCharacterViewRequirement(baseCharacter, variantRequirement);
-            upsertResource('characters', {
-              ...patchedCharacter,
-              id: baseCharacter.id,
-              type: 'characters',
-              status: patchedCharacter?.status || '待补齐',
-              isAvailable: Boolean(patchedCharacter?.isAvailable),
-              images: Array.isArray(patchedCharacter?.images) ? patchedCharacter.images : []
-            });
-            created.push({ ...entry, linkedTo: baseName, mode: 'character-variant' });
-            return;
-          }
-
-          upsertResource('characters', {
-            id: crypto.randomUUID(),
-            type: 'characters',
-            name: entry.name,
-            status: '待补齐',
-            isAvailable: false,
-            images: [],
-            form: [{ id: crypto.randomUUID(), name: '默认形态', viewRequirements: [CHARACTER_REQUIRED_VIEW_ANGLE], viewAssets: [] }],
-            meta: { viewRequirements: [CHARACTER_REQUIRED_VIEW_ANGLE], viewAssets: [] }
-          });
-        } else if (entry.type === 'scenes') {
-          upsertResource('scenes', {
-            id: crypto.randomUUID(),
-            type: 'scenes',
-            name: entry.name,
-            status: '待补齐',
-            isAvailable: false,
-            images: [],
-            meta: { sceneVariants: buildNamedSceneVariants(entry.name) }
-          });
-        } else {
-          upsertResource('props', {
-            id: crypto.randomUUID(),
-            type: 'props',
-            name: entry.name,
-            status: '待补齐',
-            isAvailable: false,
-            images: [],
-            meta: { propVariants: buildNamedPropVariants(entry.name) }
-          });
-        }
-        created.push(entry);
-      });
-    });
-    return created;
-  };
-
   const addOutline = () => {
     const next = [...outlineItems, makeOutlineItem(outlineItems.length)];
     updateChapterPatch({ storyboardOutlineItems: next, storyboardOutlineUpdatedAt: Date.now() });
@@ -1103,18 +522,11 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       const sceneId = parsed?.sceneId || '';
       const sceneName = parsed?.sceneName || '';
 
-      const normalizedSource = source.map((item) => {
-        const synopsis = String(item?.synopsis || item?.text || item?.outlineText || item?.content || '').trim();
-        return synopsis
-          ? item
-          : { ...item, synopsis: item?.shotNumber || item?.shotId || '导入镜头' };
-      });
-
-      const validationResult = validateImportedShotList(normalizedSource);
+      const validationResult = validateImportedShotList(source);
       if (!validationResult.valid) {
         throw new Error(buildImportValidationMessage(validationResult));
       }
-      const nextShots = normalizedSource.map((item, index) => {
+      const nextShots = source.map((item, index) => {
         const isNewShape = item?.mainFrame || item?.shotNumber;
         const mainFrame = item?.mainFrame || {};
         const resourcesRaw = mainFrame?.resources || item?.resources || [];
@@ -1132,7 +544,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         ]);
         const resources = (Array.isArray(resourcesRaw) ? resourcesRaw : [])
           .map((resource) => (typeof resource === 'string' ? parseResourceAbbr(resource) : resource))
-          .map((resource) => ensureResourceStructure({
+          .map((resource) => ({
             id: resource?.id || crypto.randomUUID(),
             type: resource?.type || 'characters',
             name: resource?.name || '未命名资源',
@@ -1154,8 +566,8 @@ const StoryboardEditor = ({ novelId, chapter }) => {
             : ((chapter?.storyboardOutlineItems?.length || 0) > 0 ? 0 : -1),
           synopsis: item?.synopsis || item?.text || item?.outlineText || item?.content || '',
           level: item?.level || 'L1',
-          keyframesEnabled: false,
-          keyframes: [],
+          keyframesEnabled: item?.frameMode === 'keyframes',
+          keyframes: Array.isArray(item?.keyframes) ? item.keyframes : [],
           title: mainFrame?.title || item?.title || '',
           shotType: mainFrame?.shotType || item?.shotType || '',
           shotMotion: mainFrame?.shotMotion || item?.shotMotion || '',
@@ -1165,7 +577,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           visualContent: mainFrame?.visualContent || item?.visualContent || mainFrame?.sceneDescription || item?.sceneDescription || '',
           materialContent: Array.isArray(mainFrame?.materialContent)
             ? mainFrame.materialContent
-            : (Array.isArray(item?.materialContent) || typeof item?.materialContent === 'string' ? item.materialContent : []),
+            : (Array.isArray(item?.materialContent) ? item.materialContent : []),
           soundEffect: mainFrame?.soundEffect || item?.soundEffect || '',
           shotTime: mainFrame?.shotTime || item?.shotTime || '',
           visualDescription: mainFrame?.visualDescription || item?.visualDescription || '',
@@ -1191,61 +603,36 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         };
       });
 
-      const enhancedShots = nextShots.map((shot) => {
-        const entries = normalizeMaterialContentEntries(shot.materialContent);
-        const sceneEntry = String(shot.sceneBelong || '').trim()
-          ? [{ type: 'scenes', name: String(shot.sceneBelong).trim() }]
-          : [];
-        const resolvedResources = [...entries, ...sceneEntry].map((entry) => {
-          const matched = findResourceMatch(entry, libraryResources);
-          return buildResourceByEntry(entry, matched, shot);
-        });
-        return {
-          ...shot,
-          prompt: shot.prompt || [shot.shotNumber, shot.shotType, shot.cameraAngle, shot.visualContent].filter(Boolean).join(' | '),
-          resources: mergeShotResources(shot, resolvedResources)
-        };
-      });
-
-      syncShotStatus(enhancedShots);
-      const createdDemands = createLibraryDemandsForShots(enhancedShots);
-      setActiveShotId(enhancedShots[0]?.id || '');
+      syncShotStatus(nextShots);
+      setActiveShotId(nextShots[0]?.id || '');
       setActiveFrameId('main');
 
-      updateChapterPatch((currentChapter) => {
-        const importedShots = Array.isArray(currentChapter?.storyboardShots) ? currentChapter.storyboardShots : [];
-        const normalizedIndexes = importedShots.map((shot) => (Number.isInteger(shot?.outlineIndex) ? shot.outlineIndex : 0));
-        const maxOutlineIndex = Math.max(0, ...normalizedIndexes, 0);
-        const nextOutlineItems = Array.from({ length: maxOutlineIndex + 1 }, (_, index) => ({
-          id: crypto.randomUUID(),
-          order: index + 1,
-          text: `${sceneName || '默认场景'}镜头逻辑链${maxOutlineIndex > 0 ? ` ${index + 1}` : ''}`,
-          detailUploaded: true
-        }));
+      updateChapterPatch((currentChapter) => ({
+        storyboardOutlineItems: [{ id: crypto.randomUUID(), order: 1, text: `${sceneName || '默认场景'}镜头逻辑链`, detailUploaded: true }],
+        editingWorkflow: {
+          ...(currentChapter?.editingWorkflow || {}),
+          sceneId,
+          sceneName
+        }
+      }));
 
-        const patchedShots = importedShots.map((shot) => {
-          const nextIndex = Number.isInteger(shot?.outlineIndex) && shot.outlineIndex >= 0
-            ? Math.min(shot.outlineIndex, maxOutlineIndex)
-            : 0;
-          return nextIndex === shot.outlineIndex ? shot : { ...shot, outlineIndex: nextIndex };
+      if (nextShots.some((shot) => shot.outlineIndex === -1)) {
+        updateChapterPatch((currentChapter) => {
+          const defaultOutline = makeOutlineItem(0);
+          const patchedShots = (currentChapter?.storyboardShots || []).map((shot) =>
+            shot.outlineIndex === -1 ? { ...shot, outlineIndex: 0 } : shot
+          );
+          return {
+            storyboardOutlineItems: [defaultOutline],
+            storyboardShots: patchedShots
+          };
         });
-
-        return {
-          storyboardOutlineItems: nextOutlineItems,
-          storyboardShots: patchedShots,
-          editingWorkflow: {
-            ...(currentChapter?.editingWorkflow || {}),
-            sceneId,
-            sceneName
-          }
-        };
-      });
+      }
 
       if (fromLegacy) {
         pushToast('检测到旧版分镜数据，已自动转换为新格式，建议补充场景关联等信息。','warning');
       } else {
-        pushToast(`成功导入 ${enhancedShots.length} 条镜头逻辑链数据，并完成资源匹配与占位补齐。${createdDemands.length > 0 ? `
-已自动在资源库创建 ${createdDemands.length} 条需求。` : ''}`,'success');
+        pushToast(`成功导入 ${nextShots.length} 条镜头逻辑链数据。`,'success');
       }
     } catch (error) {
       pushToast(`上传失败：${error instanceof Error ? error.message : '未知错误'}`,'error');
@@ -1328,22 +715,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     if (activeShotId && selectedSet.has(activeShotId)) {
       setActiveShotId(next[0]?.id || '');
       setActiveFrameId('main');
-      setActiveResourceId('');
     }
-  };
-
-  const deleteAllShots = () => {
-    if (!shots.length) {
-      pushToast('当前没有可删除的镜头。', 'warning');
-      return;
-    }
-    if (!window.confirm(`确认一键清空当前章节的 ${shots.length} 条镜头吗？该操作不可恢复！`)) return;
-    syncShotStatus([]);
-    setSelectedShotIds([]);
-    setActiveShotId('');
-    setActiveFrameId('main');
-    setActiveResourceId('');
-    pushToast('已清空全部分镜头。', 'success');
   };
 
   const getShotBindingCount = (shot) => {
@@ -1379,24 +751,50 @@ const StoryboardEditor = ({ novelId, chapter }) => {
 
   const updateActiveFrame = (patch) => {
     if (!activeShot || !activeFrame) return;
-    updateShot(activeShot.id, patch);
+    if (activeFrameId === 'main') {
+      updateShot(activeShot.id, patch);
+      return;
+    }
+    const nextKeyframes = (activeShot.keyframes || []).map((frame) =>
+      frame.id === activeFrameId ? { ...frame, ...patch } : frame
+    );
+    updateShot(activeShot.id, { keyframes: nextKeyframes });
+  };
+
+  const toggleKeyframes = (enabled) => {
+    if (!activeShot) return;
+    if (enabled) {
+      const keyframes = (activeShot.keyframes || []).length ? activeShot.keyframes : [makeKeyframe(0)];
+      updateShot(activeShot.id, { keyframesEnabled: true, keyframes });
+      setActiveFrameId(keyframes[0].id);
+    } else {
+      updateShot(activeShot.id, { keyframesEnabled: false });
+      setActiveFrameId('main');
+    }
+  };
+
+  const addKeyframe = () => {
+    if (!activeShot) return;
+    const next = [...(activeShot.keyframes || []), makeKeyframe((activeShot.keyframes || []).length)];
+    updateShot(activeShot.id, { keyframes: next, keyframesEnabled: true });
+    setActiveFrameId(next[next.length - 1].id);
   };
 
   const addResource = () => {
     if (!activeFrame) return;
-    updateActiveFrame({ resources: [...(activeFrame.resources || []), ensureResourceStructure(makeResource())] });
+    updateActiveFrame({ resources: [...(activeFrame.resources || []), makeResource()] });
   };
 
   const addResourcesBatch = (resourcesToAdd = []) => {
     if (!activeFrame || !Array.isArray(resourcesToAdd) || resourcesToAdd.length === 0) return;
-    updateActiveFrame({ resources: [...(activeFrame.resources || []), ...resourcesToAdd.map((item) => ensureResourceStructure(item))] });
+    updateActiveFrame({ resources: [...(activeFrame.resources || []), ...resourcesToAdd] });
   };
 
   const updateResource = (resourceId, patch) => {
     if (!activeFrame) return;
     const nextResources = (activeFrame.resources || []).map((resource) => {
       if (resource.id !== resourceId) return resource;
-      const merged = ensureResourceStructure({ ...resource, ...patch });
+      const merged = { ...resource, ...patch };
       if (Object.prototype.hasOwnProperty.call(patch, 'status') && !Object.prototype.hasOwnProperty.call(patch, 'statusLabel')) {
         merged.statusLabel = getResourceStatusLabel(merged.status);
       }
@@ -1464,7 +862,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       safelyRevokePreview(resource?.preview);
       if (resource?.preview) previewUrlsRef.current.delete(resource.preview);
 
-      const nextResourcePayload = {
+      updateResource(resourceId, {
         status: 'uploaded',
         statusLabel: getResourceStatusLabel('uploaded'),
         fileName: file.name,
@@ -1473,9 +871,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         updatedAt: Date.now(),
         sourceType: saveResult.source,
         fileHash: hash
-      };
-      updateResource(resourceId, nextResourcePayload);
-      syncUploadedResourceToLibrary({ ...resource, ...nextResourcePayload }, file, preview);
+      });
       applyFileHashPath(hash, saveResult.localPath);
       updateAllAssetsByHash(hash, {
         fileName: file.name,
@@ -1500,88 +896,6 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       });
     } catch (error) {
       pushToast(error instanceof Error ? error.message : '资源上传失败，请重试。','error');
-    }
-  };
-
-  const downloadResourcePromptTask = async (resource) => {
-    if (!resource) return;
-    try {
-      const zip = new JSZip();
-      const safeName = String(resource.name || 'resource').replace(/[\/:*?"<>|]/g, '-');
-      const promptText = String(resource?.prompt || resource?.requirement?.prompt || '').trim() || `${resource.name || ''} 图像生成提示词待补充`;
-      zip.file('prompt.txt', promptText);
-
-      const anchor = resource.preview || '';
-      if (anchor && !anchor.includes('placeholder')) {
-        let blob = null;
-        if (anchor.startsWith('data:')) {
-          blob = dataUrlToBlob(anchor);
-        } else {
-          const response = await fetch(anchor);
-          blob = await response.blob();
-        }
-        if (blob) {
-          const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
-          zip.file(`anchor.${ext}`, blob);
-        }
-      }
-
-      const content = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(content);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${safeName}-图生图任务包.zip`;
-      link.click();
-      URL.revokeObjectURL(url);
-      pushToast(`已导出 ${resource.name || '资源'} 图生图任务包。`, 'success');
-    } catch (error) {
-      pushToast(`导出任务包失败：${error instanceof Error ? error.message : '未知错误'}`, 'error');
-    }
-  };
-
-  const triggerResourceTaskUpload = (resourceId) => {
-    if (!resourceId) return;
-    resourceTaskUploadRefs.current[resourceId]?.click();
-  };
-
-  const uploadGeneratedResourceImage = async (resourceId, file) => {
-    if (!resourceId || !file) return;
-    await uploadResourceFile(resourceId, file);
-  };
-
-  const downloadVideoPromptTask = async () => {
-    if (!activeFrame) return;
-    try {
-      const zip = new JSZip();
-      const anchors = (activeFrame.resources || []).filter((item) => item.status === 'uploaded' && item.preview);
-      const promptText = String(activeFrame.videoPromptDraft || activeFrame.prompt || '').trim() || '视频生成提示词待补充';
-      zip.file('video-prompt.txt', promptText);
-
-      for (let index = 0; index < anchors.length; index += 1) {
-        const item = anchors[index];
-        let blob = null;
-        if (String(item.preview).startsWith('data:')) {
-          blob = dataUrlToBlob(item.preview);
-        } else {
-          const response = await fetch(item.preview);
-          blob = await response.blob();
-        }
-        if (!blob) continue;
-        const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
-        const safeName = String(item.name || `anchor-${index + 1}`).replace(/[\/:*?"<>|]/g, '-');
-        zip.file(`anchors/${index + 1}-${safeName}.${ext}`, blob);
-      }
-
-      const content = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(content);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${activeFrame.shotNumber || 'shot'}-视频任务包.zip`;
-      link.click();
-      URL.revokeObjectURL(url);
-      pushToast('已导出视频任务包。', 'success');
-    } catch (error) {
-      pushToast(`导出视频任务包失败：${error instanceof Error ? error.message : '未知错误'}`, 'error');
     }
   };
 
@@ -1770,7 +1084,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         shotNumber: shot.shotNumber,
         level: shot.level,
         synopsis: shot.synopsis,
-        frameMode: 'single',
+        frameMode: shot.keyframesEnabled ? 'keyframes' : 'single',
         mainFrame: {
           ...(shot.rawMainFrameUnknown || {}),
           title: shot.title,
@@ -1790,7 +1104,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           imageAsset: shot.imageAsset,
           videoAsset: shot.videoAsset
         },
-        keyframes: [],
+        keyframes: shot.keyframes || [],
         audioPlaceholders: {
           dialogue: shot.audioPlaceholders?.dialogue || shot.dialoguePlaceholder || '',
           bgm: shot.audioPlaceholders?.bgm || shot.bgmPlaceholder || '',
@@ -1914,8 +1228,6 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     const payload = shots.map((shot) => ({
       shotId: shot.id,
       shotNumber: shot.shotNumber,
-      clipGrade: levelToClipGrade(shot.level),
-      clipStandardParams: levelToClipGrade(shot.level) === 'A' ? A_LEVEL_CLIP_STANDARD_PARAMS : '',
       sceneBelong: shot.sceneBelong || '',
       shotType: shot.shotType || '',
       shotMotion: shot.shotMotion || '',
@@ -1943,7 +1255,18 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     }
 
     const targetShots = shots.filter((shot) => targetIds.has(shot.id));
-    const existingKeySet = new Set((activeFrame?.resources || []).map((res) => `${res.type}::${(res.name || '').trim()}`));
+    const existingResources = (activeFrame?.resources || []).map((resource) => ({
+      ...resource,
+      status: normalizeResourceStatus(resource.status),
+      statusLabel: getResourceStatusLabel(normalizeResourceStatus(resource.status))
+    }));
+    const existingKeySet = new Set(existingResources.map((res) => `${res.type}::${(res.name || '').trim()}`));
+    const globalLibrary = data?.resources || {};
+    const getGlobalMatch = (type, name) => {
+      const targetName = String(name || '').trim();
+      if (!targetName) return null;
+      return (globalLibrary[type] || []).find((item) => String(item?.name || '').trim() === targetName) || null;
+    };
     const missing = [];
 
     targetShots.forEach((shot) => {
@@ -1974,20 +1297,35 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     const createdResources = missing.map((item) => makeResource(item.type)).map((resource, index) => ({
       ...resource,
       name: missing[index].name,
-      subType: missing[index].type === 'characters' ? CHARACTER_DEFAULT_SUBTYPE : '',
-      prompt: `自动补齐：来自镜头 ${missing[index].fromShotNumber}`,
-      preview: getPlaceholderByType(missing[index].type)
+      subType: missing[index].type === 'characters' ? '正面全身' : '',
+      prompt: `自动补齐：来自镜头 ${missing[index].fromShotNumber}`
     }));
-    addResourcesBatch(createdResources);
-    pushToast(`已自动创建 ${createdResources.length} 条缺失资源。`, 'success');
+
+    const mappedResources = existingResources.map((resource) => {
+      const match = getGlobalMatch(resource.type, resource.name);
+      if (!match) return resource;
+      const preview = collectResourcePreview(match);
+      return {
+        ...resource,
+        status: 'uploaded',
+        statusLabel: getResourceStatusLabel('uploaded'),
+        preview: preview || resource.preview || '',
+        fileName: resource.fileName || match.fileName || '',
+        prompt: resource.prompt || match.description || '',
+        updatedAt: Date.now()
+      };
+    });
+
+    updateActiveFrame({ resources: [...mappedResources, ...createdResources] });
+    pushToast(`已自动创建 ${createdResources.length} 条缺失资源，并同步资源库已存在素材。`, 'success');
   };
 
   const generateMaterialPrompt = () => {
     const targetIds = selectedShotIds.length > 0
       ? new Set(selectedShotIds)
-      : new Set(shots.map((shot) => shot.id));
+      : (activeShot ? new Set([activeShot.id]) : new Set());
     if (targetIds.size === 0) {
-      pushToast('当前无可生成提示词的镜头。', 'warning');
+      pushToast('请先勾选需要生成提示词的镜头。', 'warning');
       return;
     }
 
@@ -2007,29 +1345,11 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         `素材需求：${resourceText}`,
         '生成要求：保持风格一致，若为图生图请尽量复用已上传资源并仅调整动作/角度。'
       ].join('\n');
-
-      const resourcePrompts = (shot.resources || []).map((resource) => {
-        const requirement = {
-          ...makeResourceRequirement(resource),
-          ...(resource.requirement || {})
-        };
-        return {
-          ...requirement,
-          type: normalizeResourceType(requirement.type || resource.type),
-          resourceName: requirement.resourceName || resource.name || '',
-          prompt: requirement.prompt || resource.prompt || '',
-          anchorImageRef: requirement.anchorImageRef || resource.anchorImageRef || resource.id || '',
-          variantLabel: String(requirement.variantLabel || resource.subType || '')
-        };
-      });
-
       return {
         shotId: shot.id,
         shotNumber: shot.shotNumber,
         prompt,
-        resourceText,
-        resourcePrompts,
-        videoPromptDraft: shot.videoPromptDraft || ''
+        resourceText
       };
     });
 
@@ -2038,153 +1358,21 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       ? { ...shot, prompt: promptMap[shot.id] }
       : shot));
     syncShotStatus(next);
-
-    const payload = {
-      generatedAt: new Date().toISOString(),
-      chapterId: chapter.id,
-      chapterTitle: chapter.title,
-      requirements: meta.map((item) => ({
-        shotId: item.shotId,
-        shotNumber: item.shotNumber,
-        prompt: item.prompt,
-        resourceText: item.resourceText,
-        resourcePrompts: item.resourcePrompts,
-        videoPromptDraft: item.videoPromptDraft
-      }))
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${chapter.title}-素材提示词-${Date.now()}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-
     setLastMaterialRequirementMeta(meta);
-    updateChapterPatch((currentChapter) => ({
-      editingWorkflow: {
-        ...(currentChapter.editingWorkflow || {}),
-        materialPromptGeneratedAt: Date.now(),
-        promptStage: 'material_prompt'
-      }
-    }));
-    pushToast(`已生成并下载 ${meta.length} 条镜头的素材提示词。`, 'success');
-  };
-
-  const importMaterialPrompt = async (file) => {
-    if (!file) return;
-    try {
-      const raw = await file.text();
-      const parsed = parseLenientJson(raw);
-      const shotPromptMap = normalizeImportedPromptMap(parsed);
-
-      if (shotPromptMap.size === 0) {
-        pushToast('未识别到可导入的提示词条目，请检查 JSON 中是否包含 shotId/shotNumber。', 'warning');
-        return;
-      }
-
-      // 提示词导入统一采用“收敛更新”策略：仅更新现有镜头/资源，不新增资源条目。
-      const strictConvergeMode = true;
-
-      const nextShots = shots.map((shot) => {
-        const source = shotPromptMap.get(normalizeShotLookupKey(shot.id)) || shotPromptMap.get(normalizeShotLookupKey(shot.shotNumber));
-        if (!source) return shot;
-        const sourceResourcePrompts = Array.isArray(source.resourcePrompts) ? source.resourcePrompts : [];
-        const groupedPromptMap = new Map();
-        sourceResourcePrompts.forEach((entry) => {
-          const type = normalizeResourceType(entry?.type || 'props');
-          const resourceName = String(entry?.resourceName || entry?.name || '').trim();
-          if (!resourceName) return;
-          const key = `${type}::${resourceName.toLowerCase()}`;
-          const list = groupedPromptMap.get(key) || [];
-          list.push({
-            ...entry,
-            type,
-            resourceName,
-            variantLabel: String(entry?.variantLabel || entry?.assetProfile || '').trim()
-          });
-          groupedPromptMap.set(key, list);
-        });
-
-        const consumeMap = new Map();
-
-        const nextResources = (shot.resources || []).map((resource) => {
-          const key = `${normalizeResourceType(resource?.type || 'props')}::${String(resource?.name || '').trim().toLowerCase()}`;
-          const candidates = groupedPromptMap.get(key) || [];
-          if (candidates.length === 0) return resource;
-          const consumedIndexes = consumeMap.get(key) || new Set();
-          const resourceVariant = String(resource?.requirement?.variantLabel || resource?.subType || '').trim();
-          let targetIndex = candidates.findIndex((entry, index) => !consumedIndexes.has(index) && resourceVariant && String(entry?.variantLabel || '').trim() === resourceVariant);
-          if (targetIndex < 0) {
-            targetIndex = candidates.findIndex((_, index) => !consumedIndexes.has(index));
-          }
-          if (targetIndex < 0) return resource;
-          consumedIndexes.add(targetIndex);
-          consumeMap.set(key, consumedIndexes);
-          const matched = candidates[targetIndex];
-          return ensureResourceStructure({
-            ...resource,
-            prompt: matched.prompt || resource.prompt,
-            anchorImageRef: matched.anchorImageRef || resource.anchorImageRef || '',
-            subType: resource.type === 'characters' ? (matched.variantLabel || resource.subType || CHARACTER_DEFAULT_SUBTYPE) : resource.subType,
-            requirement: {
-              ...makeResourceRequirement(resource),
-              ...(resource.requirement || {}),
-              ...(matched || {}),
-              variantLabel: matched.variantLabel || resource?.requirement?.variantLabel || resource?.subType || ''
-            }
-          });
-        });
-
-        return {
-          ...shot,
-          resources: nextResources,
-          prompt: source.prompt || shot.prompt || '',
-          videoPromptDraft: source.videoPromptDraft || shot.videoPromptDraft || ''
-        };
-      });
-      syncShotStatus(nextShots);
-      updateChapterPatch((currentChapter) => ({
-        editingWorkflow: {
-          ...(currentChapter.editingWorkflow || {}),
-          materialPromptImportedAt: Date.now(),
-          promptStage: 'material_prompt',
-          strictConvergeMode
-        }
-      }));
-      pushToast('提示词导入成功。\n已按收敛覆盖模式更新：仅覆盖现有镜头/资源，不会新增资源条目或资源库大类。', 'success');
-    } catch (error) {
-      pushToast(`提示词导入失败：${error instanceof Error ? error.message : '未知错误'}`, 'error');
-    }
+    pushToast(`已生成 ${meta.length} 条镜头的素材提示词。`, 'success');
   };
 
   const exportMaterialRequirement = () => {
-    const sourceMeta = shots.map((shot) => ({
-      shotId: shot.id,
-      shotNumber: shot.shotNumber,
-      prompt: shot.prompt || '',
-      resourceText: normalizeMaterialContentEntries(shot.materialContent)
-        .map((item) => `${getResourceTypeLabel(item.type)}:${item.name}`)
-        .join('；'),
-      resourcePrompts: (shot.resources || []).map((resource) => {
-        const requirement = {
-          ...makeResourceRequirement(resource),
-          ...(resource.requirement || {})
-        };
-        const sceneVariantNames = (resource?.meta?.sceneVariants || []).map((variant) => variant?.name).filter(Boolean);
-        const propVariantNames = (resource?.meta?.propVariants || []).map((variant) => variant?.name).filter(Boolean);
-        return {
-          ...requirement,
-          assetProfile: resource.type === 'characters'
-            ? CHARACTER_REQUIRED_VIEW_ANGLE
-            : (sceneVariantNames[0] || propVariantNames[0] || resource.name || '')
-        };
-      }),
-      videoPromptDraft: shot.videoPromptDraft || '',
-      motionType: shot.motionType || 'static',
-      videoNeeded: ['L3', 'L4'].includes(shot.level),
-      videoSegments: Array.isArray(shot.videoSegments) ? shot.videoSegments : []
-    }));
+    const sourceMeta = lastMaterialRequirementMeta.length > 0
+      ? lastMaterialRequirementMeta
+      : shots.map((shot) => ({
+          shotId: shot.id,
+          shotNumber: shot.shotNumber,
+          prompt: shot.prompt || '',
+          resourceText: normalizeMaterialContentEntries(shot.materialContent)
+            .map((item) => `${getResourceTypeLabel(item.type)}:${item.name}`)
+            .join('；')
+        }));
     const payload = {
       generatedAt: new Date().toISOString(),
       chapterId: chapter.id,
@@ -2219,12 +1407,6 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         name: `${chapter.title}-图生图参考素材包.zip`
       }]);
     });
-    updateChapterPatch((currentChapter) => ({
-      editingWorkflow: {
-        ...(currentChapter.editingWorkflow || {}),
-        promptStage: 'video_prompt'
-      }
-    }));
     pushToast('已导出素材需求元信息。', 'success');
   };
 
@@ -2273,8 +1455,13 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     }
   };
 
-  const missingResources = (activeFrame?.resources || []).filter((item) => item.status !== 'uploaded');
-  const uploadedResources = (activeFrame?.resources || []).filter((item) => item.status === 'uploaded');
+  const normalizedFrameResources = (activeFrame?.resources || []).map((item) => ({
+    ...item,
+    status: normalizeResourceStatus(item.status),
+    statusLabel: getResourceStatusLabel(normalizeResourceStatus(item.status))
+  }));
+  const missingResources = normalizedFrameResources.filter((item) => item.status !== 'uploaded');
+  const uploadedResources = normalizedFrameResources.filter((item) => item.status === 'uploaded');
   const sceneLibraryOptions = uploadedResources.filter((item) => item.type === 'scenes');
   const materialContentDraft = JSON.stringify(Array.isArray(activeFrame?.materialContent) ? activeFrame.materialContent : [], null, 2);
   const needsImageUpload = activeShot && ['L1', 'L3'].includes(activeShot.level);
@@ -2282,37 +1469,8 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   const resourceStoragePath = buildTargetPath('characters', 'default');
   const frameAssetStoragePath = buildTargetPath('shot-assets', activeShot?.level || 'L1');
 
-  const handleResourceEntryClick = (resource) => {
-    if (!resource) return;
-    setActiveResourceId(resource.id);
-  };
-
-  const triggerReplaceUploadedResource = (resourceId) => {
-    if (!resourceId) return;
-    uploadedReplaceUploadRefs.current[resourceId]?.click();
-  };
-
-  const replaceUploadedResource = async (resourceId, file) => {
-    if (!resourceId || !file) return;
-    await uploadResourceFile(resourceId, file);
-  };
-
-  const activeShotResourceGroups = useMemo(() => {
-    const source = Array.isArray(activeFrame?.resources) ? activeFrame.resources : [];
-    return {
-      characters: source.filter((item) => item.type === 'characters').slice(0, 5),
-      scenes: source.filter((item) => item.type === 'scenes').slice(0, 1),
-      props: source.filter((item) => item.type === 'props')
-    };
-  }, [activeFrame?.resources]);
-
-  const selectedResource = useMemo(
-    () => (activeFrame?.resources || []).find((item) => item.id === activeResourceId) || null,
-    [activeFrame?.resources, activeResourceId]
-  );
-
-  const [leftPanelWidth, setLeftPanelWidth] = useState(20);
-  const [rightPanelWidth, setRightPanelWidth] = useState(30);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(320);
+  const [rightPanelWidth, setRightPanelWidth] = useState(360);
   const [dragTarget, setDragTarget] = useState('');
 
   useEffect(() => {
@@ -2320,11 +1478,11 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     const handleMove = (event) => {
       const viewport = window.innerWidth;
       if (dragTarget === 'left') {
-        const next = Math.min(Math.max(((event.clientX - 20) / viewport) * 100, 16), 30);
+        const next = Math.min(Math.max(event.clientX - 20, 260), 520);
         setLeftPanelWidth(next);
       }
       if (dragTarget === 'right') {
-        const next = Math.min(Math.max(((viewport - event.clientX - 20) / viewport) * 100, 24), 36);
+        const next = Math.min(Math.max(viewport - event.clientX - 20, 300), 520);
         setRightPanelWidth(next);
       }
     };
@@ -2336,7 +1494,6 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       window.removeEventListener('mouseup', stopDrag);
     };
   }, [dragTarget]);
-
 
 
   useEffect(() => () => {
@@ -2358,7 +1515,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
   return (
     <div
       className={`storyboard-workspace ${dragTarget ? 'resizing' : ''}`}
-      style={{ '--left-panel-width': `${leftPanelWidth}%`, '--right-panel-width': `${rightPanelWidth}%` }}
+      style={{ '--left-panel-width': `${leftPanelWidth}px`, '--right-panel-width': `${rightPanelWidth}px` }}
     >
       <section className="storyboard-editor-panel">
         <div className="storyboard-editor-header">
@@ -2386,11 +1543,42 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                       ))}
                     </select>
                   </label>
+                  <label className="row" style={{ gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={activeShot.keyframesEnabled}
+                      onChange={(event) => toggleKeyframes(event.target.checked)}
+                    />
+                    关键帧
+                  </label>
                 </div>
               </div>
               {!shotValidationById[activeShot.id]?.isValid && (
                 <div className="muted" style={{ color: '#F5222D' }}>
                   缺失项：{(shotValidationById[activeShot.id]?.missingLabels || []).join('、')}
+                </div>
+              )}
+
+              {activeShot.keyframesEnabled && (
+                <div className="row wrap" style={{ marginBottom: 8 }}>
+                  <button
+                    type="button"
+                    className={`tab ${activeFrameId === 'main' ? 'active' : ''}`}
+                    onClick={() => setActiveFrameId('main')}
+                  >
+                    主镜头
+                  </button>
+                  {(activeShot.keyframes || []).map((frame) => (
+                    <button
+                      key={frame.id}
+                      type="button"
+                      className={`tab ${activeFrameId === frame.id ? 'active' : ''}`}
+                      onClick={() => setActiveFrameId(frame.id)}
+                    >
+                      {frame.name}
+                    </button>
+                  ))}
+                  <button type="button" className="tab" onClick={addKeyframe}>+ 关键帧</button>
                 </div>
               )}
 
@@ -2568,37 +1756,60 @@ const StoryboardEditor = ({ novelId, chapter }) => {
             />
             <button
               type="button"
-              className={`button-stage ${canGenerateMaterialPrompt ? 'ready' : 'disabled'}`}
+              className={`clip-export-top-button ${chapter.editingWorkflow?.clipExportReady ? 'ready' : 'pending'}`}
+              onClick={handleClipExportClick}
+              disabled={!chapter?.editingWorkflow?.clipExportReady}
+              title={!chapter?.editingWorkflow?.clipExportReady ? '存在未完善镜头，请补全必填项。' : '导出剪映清单'}
+            >
+              导出剪映清单
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={exportClipGradeTable}
+              title="导出剪辑分级表（CSV）"
+            >
+              导出剪辑分级表
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={generateClipMethodsForSelection}
+              title="为当前选中镜头生成剪辑手法"
+            >
+              生成剪辑手法
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={exportClipMethodList}
+              title="导出剪辑手法清单（JSON）"
+            >
+              导出剪辑手法
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={materialCompletionCheck}
+              title="检测缺失资源并自动创建"
+            >
+              素材补齐
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
               onClick={generateMaterialPrompt}
-              disabled={!canGenerateMaterialPrompt}
-              title={canGenerateMaterialPrompt ? '为当前章节生成素材提示词' : '请先补齐所有资源'}
+              title="为选中镜头生成素材提示词"
             >
               生成素材提示词
             </button>
             <button
               type="button"
-              className={`button-stage ${canImportPrompt ? 'ready' : 'disabled'}`}
-              onClick={() => promptUploadRef.current?.click()}
-              disabled={!canImportPrompt}
-              title={canImportPrompt ? '导入提示词 JSON' : '请先完成生成素材提示词'}
-            >
-              导入提示词
-            </button>
-            <input
-              ref={promptUploadRef}
-              type="file"
-              accept="application/json,text/plain"
-              style={{ display: 'none' }}
-              onChange={(event) => importMaterialPrompt(event.target.files?.[0])}
-            />
-            <button
-              type="button"
-              className={`button-stage ${canGenerateVideoPrompt ? 'ready' : 'disabled'}`}
+              className="button-secondary"
               onClick={exportMaterialRequirement}
-              disabled={!canGenerateVideoPrompt}
-              title={canGenerateVideoPrompt ? '导出视频提示词与素材元信息' : '请先导入提示词'}
+              title="导出素材需求元信息 JSON"
             >
-              生成视频提示词
+              导出素材元信息
             </button>
           </div>
         </div>
@@ -2607,7 +1818,6 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           <div className="section-header">
             <h3>核心镜头脉络</h3>
             <div className="row" style={{ gap: 8 }}>
-              <button type="button" className="danger" onClick={deleteAllShots}>一键清空镜头</button>
               <label className="row" style={{ gap: 6 }}>
                 时间轴缩放
                 <input type="range" min="0.8" max="1.2" step="0.1" value={timelineZoom} onChange={(event) => setTimelineZoom(Number(event.target.value))} />
@@ -2621,7 +1831,6 @@ const StoryboardEditor = ({ novelId, chapter }) => {
               <button type="button" className="danger" onClick={batchDeleteSelectedShots}>批量删除</button>
             </div>
           </div>
-
 
           <div className="outline-list">
             {groupedShots.map(({ outline, outlineIndex, shots: outlineShots }) => (
@@ -2659,10 +1868,17 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                   {outlineShots.map((shot) => {
                     const validation = shotValidationById[shot.id] || { isValid: true, missingLabels: [] };
                     return (
-                      <div
-                        key={shot.id}
-                        className={`shot-stage-list-item ${activeShotId === shot.id ? 'active' : ''} ${highlightIncompleteShotId === shot.id ? 'highlight-danger' : ''} ${!validation.isValid ? 'highlight-danger' : ''}`}
+                      <button
+                        key={shot.shotNumber}
+                        type="button"
                         draggable
+                        title={validation.isValid ? '' : `缺失：${validation.missingLabels.join('、')}`}
+                        className={`shot-row ${activeShotId === shot.id ? 'active' : ''} ${highlightIncompleteShotId === shot.id ? 'highlight-danger' : ''} ${!validation.isValid ? 'highlight-danger' : ''}`}
+                        style={{
+                          gridTemplateColumns: `${95 * timelineZoom}px minmax(${180 * timelineZoom}px,1fr) ${70 * timelineZoom}px ${70 * timelineZoom}px 48px`,
+                          gap: `${8 * timelineZoom}px`,
+                          padding: `${8 * timelineZoom}px`
+                        }}
                         onDragStart={() => setDraggingShotId(shot.id)}
                         onDragOver={(event) => event.preventDefault()}
                         onDrop={(event) => {
@@ -2674,54 +1890,41 @@ const StoryboardEditor = ({ novelId, chapter }) => {
                           setActiveShotId(shot.id);
                           setActiveFrameId('main');
                           setHighlightIncompleteShotId('');
-                          setActiveResourceId('');
                         }}
                       >
-                        <div className="shot-stage-list-head">
-                          <label className="row" style={{ gap: 8 }} onClick={(event) => event.stopPropagation()}>
-                            <input
-                              type="checkbox"
-                              checked={selectedShotIds.includes(shot.id)}
-                              onChange={() => toggleShotSelection(shot.id)}
-                            />
-                            <strong>#{shot.shotNumber}</strong>
-                          </label>
-                          <div className="row" style={{ gap: 8 }}>
-                            <span className="status-chip">{shot.level}</span>
-                            <span className={`status-pill ${shot.completed ? 'green' : 'orange'}`}>{shot.completed ? '已完成' : '缺失'}</span>
-                            <button
-                              type="button"
-                              className="tab"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                deleteShot(shot.id);
-                              }}
-                            >删除</button>
-                          </div>
-                        </div>
-                        <div className="storage-path-hint">{shot.synopsis || shot.title || '未命名镜头'}</div>
-                        <div className="storage-path-hint">{shot.shotType || '景别待填'} · 时长 {shot.shotDuration || shot.shotTime || '-'} · {shot.shotMotion || '固定'} · {shot.cameraAngle || '平视'} · {shot.sceneBelong || '未关联场景'}</div>
-                        <div className="shot-stage-inline-groups">
-                          {['characters', 'scenes', 'props'].map((type) => {
-                            const groups = getShotResourceGroups(shot);
-                            const items = groups[type].slice(0, type === 'props' ? 4 : 2);
-                            return (
-                              <div key={type} className="shot-stage-inline-group">
-                                <span>{getResourceTypeLabel(type)}</span>
-                                <div className="shot-stage-inline-track">
-                                  {items.map((resource) => (
-                                    <div key={resource.id} className="shot-stage-inline-chip">
-                                      <img src={resource.preview || getPlaceholderByType(resource.type)} alt={resource.name || 'resource'} />
-                                      <em>{resource.name || '未命名'}</em>
-                                    </div>
-                                  ))}
-                                  {items.length === 0 && <em className="muted">暂无</em>}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
+                        <span>
+                          <input
+                            type="checkbox"
+                            checked={selectedShotIds.includes(shot.id)}
+                            onChange={(event) => {
+                              event.stopPropagation();
+                              toggleShotSelection(shot.id);
+                            }}
+                            onClick={(event) => event.stopPropagation()}
+                          />
+                        </span>
+                        <span>#{shot.shotNumber}</span>
+                        <span>{shot.synopsis || shot.title || '未命名镜头'}</span>
+                        <span>{shot.level}</span>
+                        <span>{shot.completed ? '完成' : '未完善'}</span>
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            deleteShot(shot.id);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              deleteShot(shot.id);
+                            }
+                          }}
+                        >
+                          删除
+                        </span>
+                      </button>
                     );
                   })}
                   {outlineShots.length === 0 && <div className="empty">当前大纲暂无二级分镜头。</div>}
@@ -2741,133 +1944,143 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       />
 
       <aside className="storyboard-side-panel">
-        <div className="storyboard-side-header compact-header">
-          <h3>资源面板</h3>
-          <button type="button" className="button-secondary" onClick={addResource}>创建资源需求</button>
-          <label className="file-button compact">
-            批量素材回传
-            <input
-              ref={batchUploadRef}
-              type="file"
-              multiple
-              accept=".png,.jpg,.jpeg,.webp,.mp4,.mov"
-              onChange={(event) => uploadResourceFileBatch(event.target.files)}
-            />
-          </label>
+        <div className="storyboard-side-header">
+          <div>
+            <h3>资源面板</h3>
+            <div className="storage-path-hint">资源默认保存：{resourceStoragePath}</div>
+            <div className="storage-path-hint">临时参考包记录：{tempPackageHistory.length}</div>
+            <div className="row" style={{ marginTop: 8, gap: 8 }}>
+              <button type="button" className={activeSideTab === 'resources' ? 'tab active' : 'tab'} onClick={() => setActiveSideTab('resources')}>资源</button>
+              <button type="button" className={activeSideTab === 'scenes' ? 'tab active' : 'tab'} onClick={() => setActiveSideTab('scenes')}>场景</button>
+            </div>
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <button type="button" className="button-secondary" onClick={() => setActiveSideTab('scenes')}>场景库</button>
+            <button type="button" className="button-secondary" onClick={saveCurrentShotChecklist}>保存清单</button>
+            <label className="file-button compact">
+              批量素材回传
+              <input
+                ref={batchUploadRef}
+                type="file"
+                multiple
+                accept=".png,.jpg,.jpeg,.webp,.mp4,.mov"
+                onChange={(event) => uploadResourceFileBatch(event.target.files)}
+              />
+            </label>
+            <button type="button" className="button-secondary" onClick={cleanTempReferencePackage}>一键清理临时文件</button>
+            <button type="button" onClick={addResource} disabled={!activeFrame || activeSideTab !== 'resources'}>+ 资源</button>
+          </div>
         </div>
 
         {!activeFrame && <div className="empty">请选择镜头后编辑资源。</div>}
 
         {activeFrame && (
           <div className="storyboard-side-scroll">
-            {workflowStage === 'material_prompt' && (
-            <div className="resource-square-section">
-              <div className="resource-square-section-title">图像提示词任务（缺失资源）</div>
-              <div className="prompt-task-list">
-                {missingResources.map((resource) => (
-                  <div key={resource.id} className={`prompt-task-card ${activeResourceId === resource.id ? 'active' : ''}`}>
-                    <div className="prompt-task-anchor">
-                      <img
-                        src={resource.preview || getPlaceholderByType(resource.type)}
-                        alt={resource.name || 'anchor'}
-                        onClick={() => handleResourceEntryClick(resource)}
-                      />
-                    </div>
-                    <div className="prompt-task-body">
-                      <strong>{resource.name || '未命名资源'}</strong>
-                      <span className="muted">{getResourceTypeLabel(resource.type)} · 缺失</span>
-                      <textarea
-                        value={resource.prompt || resource.requirement?.prompt || ''}
-                        onChange={(event) => updateResource(resource.id, { prompt: event.target.value })}
-                        placeholder="输入该资源的图生图提示词"
-                      />
-                      <div className="row" style={{ gap: 8 }}>
-                        <button type="button" onClick={() => downloadResourcePromptTask(resource)}>下载任务包</button>
-                        <button type="button" className="button-secondary" onClick={() => triggerResourceTaskUpload(resource.id)}>上传生成图</button>
-                        <input
-                          type="file"
-                          accept=".png,.jpg,.jpeg,.webp"
-                          style={{ display: 'none' }}
-                          ref={(el) => { resourceTaskUploadRefs.current[resource.id] = el; }}
-                          onChange={(event) => uploadGeneratedResourceImage(resource.id, event.target.files?.[0])}
-                        />
+            {activeSideTab === 'scenes' && <div className="empty">场景库已打开（左侧场景 Tab）。</div>}
+            {activeSideTab === 'resources' && (
+            <>
+            <div className="folder-card">
+              <button type="button" className={`folder-title ${expandedFolders.missing ? 'active' : ''}`} onClick={() => toggleFolder('missing')}>
+                <span className="folder-title-badge danger">缺失资源</span>
+              </button>
+              {expandedFolders.missing && (
+                <div className="folder-body">
+                  {missingResources.map((resource) => (
+                    <div key={resource.id} className="resource-item missing">
+                      <div className="resource-item-head">
+                        <strong>{getResourceTypeLabel(resource.type)} · {resource.name || '未命名资源'}</strong>
                       </div>
+                      <label>
+                        资源类型
+                        <select value={resource.type} onChange={(event) => updateResource(resource.id, { type: event.target.value })}>
+                          {Object.keys(RESOURCE_TYPE_LABELS).map((type) => (
+                            <option key={type} value={type}>{RESOURCE_TYPE_LABELS[type]}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        资源名称
+                        <input value={resource.name} onChange={(event) => updateResource(resource.id, { name: event.target.value })} />
+                      </label>
+                      <label>
+                        二级资源类型
+                        <input
+                          placeholder="形态 / Q版 / L1非常规 / L3非常规"
+                          value={resource.subType}
+                          onChange={(event) => updateResource(resource.id, { subType: event.target.value })}
+                        />
+                      </label>
+                      <label>
+                        提示词
+                        <textarea className="large-input compact-input" value={resource.prompt} onChange={(event) => updateResource(resource.id, { prompt: event.target.value })} />
+                      </label>
+                      {resource.type === 'characters' && (
+                        <div className="storage-path-hint" style={{ marginBottom: 8, color: '#b54708' }}>
+                          正面全身图为必填项，其余角色素材为选填项。
+                        </div>
+                      )}
+                      <label className="placeholder-upload">
+                        {resource.type === 'characters' ? '上传正面全身图（必填）' : '上传资源'}
+                        <input type="file" accept=".png,.jpg,.jpeg,.webp,.mp4,.mov" onChange={(event) => uploadResourceFile(resource.id, event.target.files?.[0])} />
+                      </label>
+                      {resource.type === 'characters' && (
+                        <details>
+                          <summary>展开查看其他选填素材（侧面 / 背面 / 面部特写 / Q版 / 特殊角度）</summary>
+                          <div className="storage-path-hint" style={{ marginTop: 6 }}>
+                            可通过继续新增角色资源补充，不影响当前基础资源保存。
+                          </div>
+                        </details>
+                      )}
+                      <div className="storage-path-hint">目标目录：{buildTargetPath(resource.type, resource.subType)}</div>
+                      <div className="storage-path-hint">状态：{resource.statusLabel || getResourceStatusLabel(resource.status)}</div>
                     </div>
-                  </div>
-                ))}
-                {missingResources.length === 0 && <div className="empty">无缺失资源。</div>}
-              </div>
-            </div>
-            )}
-
-            {workflowStage === 'video_prompt' && (
-            <div className="resource-square-section">
-              <div className="resource-square-section-title">视频提示词任务</div>
-              <div className="prompt-task-card">
-                <div className="prompt-task-anchor-group">
-                  {(uploadedResources || []).filter((item) => item.preview).slice(0, 6).map((resource) => (
-                    <img key={resource.id} src={resource.preview} alt={resource.name || 'anchor'} title={resource.name || ''} />
                   ))}
-                  {(uploadedResources || []).filter((item) => item.preview).length === 0 && <div className="muted">暂无可用锚定图，请先上传上方图像任务结果。</div>}
+                  {missingResources.length === 0 && <div className="empty">无缺失资源。</div>}
                 </div>
-                <div className="prompt-task-body">
-                  <textarea
-                    value={activeFrame.videoPromptDraft || ''}
-                    onChange={(event) => updateActiveFrame({ videoPromptDraft: event.target.value })}
-                    placeholder="输入视频生成提示词"
-                  />
-                  <div className="row" style={{ gap: 8 }}>
-                    <button type="button" onClick={downloadVideoPromptTask}>下载视频任务包</button>
-                    <button type="button" className="button-secondary" onClick={() => videoTaskUploadRef.current?.click()}>上传生成视频</button>
-                    <input
-                      ref={videoTaskUploadRef}
-                      type="file"
-                      accept=".mp4,.mov"
-                      style={{ display: 'none' }}
-                      onChange={(event) => uploadFrameAsset('videoAsset', event.target.files?.[0])}
-                    />
-                  </div>
-                </div>
-              </div>
+              )}
             </div>
-            )}
 
-            <div className="resource-square-section">
-              <div className="resource-square-section-title">已上传资源</div>
-              <div className="resource-square-grid">
-                {uploadedResources.map((resource) => (
-                  <div
-                    key={resource.id}
-                    className={`resource-square-card uploaded ${activeResourceId === resource.id ? 'active' : ''}`}
-                    onClick={() => handleResourceEntryClick(resource)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(event) => event.key === 'Enter' && handleResourceEntryClick(resource)}
-                  >
-                    <img src={resource.preview || getPlaceholderByType(resource.type)} alt={resource.name || 'resource'} />
-                    <strong>{resource.name || '未命名资源'}</strong>
-                    <span>{getResourceTypeLabel(resource.type)} · 已上传</span>
-                    <button
-                      type="button"
-                      className="button-secondary"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        triggerReplaceUploadedResource(resource.id);
-                      }}
-                    >
-                      替换
-                    </button>
-                    <input
-                      type="file"
-                      accept=".png,.jpg,.jpeg,.webp,.mp4,.mov"
-                      style={{ display: 'none' }}
-                      ref={(el) => { uploadedReplaceUploadRefs.current[resource.id] = el; }}
-                      onChange={(event) => replaceUploadedResource(resource.id, event.target.files?.[0])}
-                    />
-                  </div>
-                ))}
-                {uploadedResources.length === 0 && <div className="empty">暂无已上传资源。</div>}
-              </div>
+            <div className="folder-card">
+              <button type="button" className={`folder-title ${expandedFolders.uploaded ? 'active' : ''}`} onClick={() => toggleFolder('uploaded')}>
+                <span className="folder-title-badge success">已上传资源</span>
+              </button>
+              {expandedFolders.uploaded && (
+                <div className="folder-body">
+                  {uploadedResources.map((resource) => (
+                    <div key={resource.id} className="resource-item uploaded">
+                      <div className="resource-item-head">
+                        <strong>{getResourceTypeLabel(resource.type)} · {resource.name}</strong>
+                        <div className="row">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openZoomPreview({ type: 'resource', src: resource.preview || '', resourceId: resource.id })
+                            }
+                          >
+                            查看
+                          </button>
+                          <button type="button" onClick={() => triggerPreviewDownload(resource.preview, resource.fileName)}>下载</button>
+                          <label className="file-button compact">
+                            替换
+                            <input type="file" accept=".png,.jpg,.jpeg,.webp,.mp4,.mov" onChange={(event) => uploadResourceFile(resource.id, event.target.files?.[0])} />
+                          </label>
+                        </div>
+                      </div>
+                      {resource.preview && (
+                        <img
+                          src={resource.preview}
+                          alt={resource.name || 'resource'}
+                          className="resource-thumb"
+                          onClick={() => openZoomPreview({ type: 'resource', src: resource.preview, resourceId: resource.id })}
+                        />
+                      )}
+                      <div className="storage-path-hint">本地路径：{resource.localPath || '未上传'}</div>
+                      <div className="storage-path-hint">状态：{resource.statusLabel || getResourceStatusLabel(resource.status)}</div>
+                    </div>
+                  ))}
+                  {uploadedResources.length === 0 && <div className="empty">暂无已上传资源。</div>}
+                </div>
+              )}
             </div>
 
             {needsImageUpload && (
@@ -2919,6 +2132,8 @@ const StoryboardEditor = ({ novelId, chapter }) => {
               </div>
             )}
 
+            </>
+            )}
           </div>
         )}
       </aside>
