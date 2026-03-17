@@ -53,16 +53,13 @@ const tabOptions = [
 
 const defaultRuleMap = {
   '生成小说-大纲提示词': {
-    description: '生成小说大纲提示词模板与选项规范。',
-    overview:
-      '用于生成小说大纲的提示词模板与选择题规范，输出为可直接复制的提示词文本。',
-    tasks: ['根据选项生成提示词', '输出专业化故事大纲提示词'],
+    description: '生成小说大纲提示词模板。',
+    overview: '用于生成小说大纲的提示词模板，输出为可直接复制的提示词文本。',
+    tasks: ['输出专业化故事大纲提示词'],
     exportSpec: {
-      output: '大纲提示词文本',
-      selections: '选项答案汇总（可选）'
+      output: '大纲提示词文本'
     },
     importSpec: {
-      selections: '选择题结构（主题/背景/冲突/主角性格/反派/基调/视角/时间线/目标/结局）',
       template: '提示词模板字符串'
     }
   },
@@ -421,6 +418,21 @@ const RuleLibrary = () => {
     URL.revokeObjectURL(url);
   };
 
+  const handleExportPrompt = () => {
+    if (!selectedItem?.label) return;
+    if (!draft.promptTemplate.trim()) {
+      alert('提示词模板为空');
+      return;
+    }
+    const blob = new Blob([draft.promptTemplate], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${selectedItem.label}-prompt.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const hydrateDraft = (rule, tool) => {
     const defaults = getRuleDefaults(tool || rule?.tool);
     if (!rule) {
@@ -592,6 +604,13 @@ const RuleLibrary = () => {
                 <div className="rule-panel">
                   <div className="rule-panel-header">
                     <h4>口令（Prompt + 说明）</h4>
+                    {!isEditing && (
+                      <div className="row">
+                        <button type="button" onClick={handleExportPrompt}>
+                          导出提示词 TXT
+                        </button>
+                      </div>
+                    )}
                   </div>
                   <div className="rule-panel-body">
                     <label>
