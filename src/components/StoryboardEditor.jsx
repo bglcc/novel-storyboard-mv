@@ -393,6 +393,34 @@ const normalizeImportedPromptMap = (parsed) => {
   return normalizedMap;
 };
 
+const buildImportedPromptVariantLabel = (entry = {}) => {
+  const explicit = String(entry?.variantLabel || entry?.assetProfile || '').trim();
+  const prompt = String(entry?.prompt || '').trim();
+  if (!prompt) return explicit;
+
+  const segments = prompt
+    .split(/[，,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const firstVisualSegment = segments.find((item) => /(?:近景|中景|远景|特写|全景|半身|面部)/.test(item)) || '';
+
+  const actionMatch = prompt.match(/动作[:：]\s*([^，,。]+)/);
+  const expressionMatch = prompt.match(/表情[:：]\s*([^，,。]+)/);
+  const viewMatch = prompt.match(/视角[:：]\s*([^，,。]+)/);
+
+  const parts = [];
+  if (firstVisualSegment) parts.push(firstVisualSegment);
+  if (actionMatch?.[1]) parts.push(actionMatch[1].trim());
+  if (expressionMatch?.[1]) parts.push(expressionMatch[1].trim());
+
+  const parsed = parts.join('-').trim();
+  const base = parsed || explicit;
+  if (viewMatch?.[1]) {
+    return base ? `${base}，视角：${viewMatch[1].trim()}` : `视角：${viewMatch[1].trim()}`;
+  }
+  return base;
+};
+
 
 const CHARACTER_REQUIRED_VIEW_ANGLE = '正面-全身-站立';
 
@@ -407,6 +435,108 @@ const hasCharacterRequiredView = (resource = {}) => {
     return allViews.length === 0;
   }
   return false;
+};
+
+const normalizeVariantLookupKey = (value = '') => String(value || '')
+  .trim()
+  .toLowerCase()
+  .replace(/[\s_—–]+/g, '-')
+  .replace(/-+/g, '-');
+
+const isVariantLabelMatched = (left = '', right = '') => {
+  const a = normalizeVariantLookupKey(left);
+  const b = normalizeVariantLookupKey(right);
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+};
+
+const getResourcePromptTemplate = (resource = {}) => {
+  const name = String(resource?.name || '').trim() || '未命名资源';
+  const variant = String(resource?.requirement?.variantLabel || resource?.subType || '').trim();
+  if (resource?.type === 'characters') {
+    return `${name}${variant ? `，子项：${variant}` : ''}，背景：纯白干净背景，光线：自然光，风格：写实古风，无文字无水印`;
+  }
+  if (resource?.type === 'scenes') {
+    return `场景名：${name}${variant ? `，子项：${variant}` : ''}，要求：无核心人物、无文字，干净背景层，适配角色叠加合成，风格：写实古风`;
+  }
+  return `道具名：${name}${variant ? `，子项：${variant}` : ''}，要求：主体清晰、背景干净，风格统一，无文字无水印`;
+};
+
+const extractVariantFromPrompt = (promptText = '') => {
+  const prompt = String(promptText || '').trim();
+  if (!prompt) return '';
+  const directMatch = prompt.match(/(?:子项|视角|构图|机位|版本)[:：]\s*([^，,\n。]+)/);
+  if (directMatch?.[1]) return directMatch[1].trim();
+  return '';
+};
+
+const getResourceVariantDemand = (resource = {}) => {
+  const requirement = resource?.requirement || {};
+  const explicit = String(requirement?.variantLabel || requirement?.assetProfile || resource?.subType || '').trim();
+  if (explicit) return explicit;
+  return extractVariantFromPrompt(resource?.prompt || requirement?.prompt || '');
+};
+
+const resolveLibraryResourceAvailability = (resource = {}, libraryResource = {}) => {
+  const fallbackPreview = pickResourceCover(libraryResource);
+  const fallbackFileName = String(libraryResource?.fileName || '').trim();
+
+  if (resource?.type === 'characters') {
+    const requiredVariant = getResourceVariantDemand(resource);
+    const viewAssetsFromForm = Array.isArray(libraryResource?.form)
+      ? libraryResource.form.flatMap((form) => form?.viewAssets || [])
+      : [];
+    const viewAssetsFromMeta = Array.isArray(libraryResource?.meta?.viewAssets) ? libraryResource.meta.viewAssets : [];
+    const viewAssets = [...viewAssetsFromForm, ...viewAssetsFromMeta].filter(Boolean);
+    const matchedAsset = requiredVariant
+      ? viewAssets.find((asset) => isVariantLabelMatched(asset?.viewAngle || '', requiredVariant))
+      : viewAssets[0];
+    const hasAnyAsset = Boolean(matchedAsset || (Array.isArray(libraryResource?.images) && libraryResource.images.length > 0));
+
+    if (!requiredVariant) {
+      return {
+        available: hasAnyAsset && hasCharacterRequiredView(libraryResource),
+        preview: (matchedAsset?.src || matchedAsset?.url || '') || fallbackPreview,
+        fileName: String(matchedAsset?.fileName || '') || fallbackFileName
+      };
+    }
+
+    return {
+      available: Boolean(matchedAsset),
+      preview: (matchedAsset?.src || matchedAsset?.url || '') || fallbackPreview,
+      fileName: String(matchedAsset?.fileName || '') || fallbackFileName
+    };
+  }
+
+  if (resource?.type === 'scenes') {
+    const requiredVariant = getResourceVariantDemand(resource);
+    const sceneVariants = Array.isArray(libraryResource?.meta?.sceneVariants) ? libraryResource.meta.sceneVariants : [];
+    const matchedVariant = requiredVariant
+      ? sceneVariants.find((variant) => isVariantLabelMatched(variant?.name || '', requiredVariant))
+      : sceneVariants[0];
+    const matchedImage = Array.isArray(matchedVariant?.images) ? matchedVariant.images[0] : null;
+    const hasAnyAsset = Boolean((matchedVariant && Array.isArray(matchedVariant.images) && matchedVariant.images.length > 0)
+      || (Array.isArray(libraryResource?.images) && libraryResource.images.length > 0));
+    return {
+      available: requiredVariant ? Boolean(matchedImage) : hasAnyAsset,
+      preview: (matchedImage?.src || matchedImage?.url || '') || fallbackPreview,
+      fileName: String(matchedImage?.fileName || '') || fallbackFileName
+    };
+  }
+
+  const requiredVariant = getResourceVariantDemand(resource);
+  const propVariants = Array.isArray(libraryResource?.meta?.propVariants) ? libraryResource.meta.propVariants : [];
+  const matchedVariant = requiredVariant
+    ? propVariants.find((variant) => isVariantLabelMatched(variant?.name || '', requiredVariant))
+    : propVariants[0];
+  const matchedImage = Array.isArray(matchedVariant?.images) ? matchedVariant.images[0] : null;
+  const hasAnyAsset = Boolean((matchedVariant && Array.isArray(matchedVariant.images) && matchedVariant.images.length > 0)
+    || (Array.isArray(libraryResource?.images) && libraryResource.images.length > 0));
+  return {
+    available: requiredVariant ? Boolean(matchedImage) : hasAnyAsset,
+    preview: (matchedImage?.src || matchedImage?.url || '') || fallbackPreview,
+    fileName: String(matchedImage?.fileName || '') || fallbackFileName
+  };
 };
 
 const getResourceTextMeta = (resource = {}) => ({
@@ -619,10 +749,19 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         if (!name) return resource;
         const match = libraryResources.find((item) => item.type === resource.type && String(item.name || '').trim().toLowerCase() === name);
         if (!match) return resource;
-        const nextStatus = match.status === 'uploaded' ? 'uploaded' : resource.status;
-        const nextPreview = match.preview || resource.preview || (nextStatus === 'uploaded' ? '' : getPlaceholderByType(resource.type));
-        const nextFileName = match.fileName || resource.fileName || '';
-        if (nextStatus !== resource.status || nextPreview !== resource.preview || nextFileName !== resource.fileName) {
+        const availability = resolveLibraryResourceAvailability(resource, match);
+        const nextStatus = availability.available ? 'uploaded' : 'missing';
+        const nextPreview = availability.preview || resource.preview || (nextStatus === 'uploaded' ? '' : getPlaceholderByType(resource.type));
+        const nextFileName = availability.fileName || resource.fileName || '';
+        const nextPrompt = String(resource?.prompt || resource?.requirement?.prompt || '').trim()
+          ? resource.prompt
+          : getResourcePromptTemplate(resource);
+        if (
+          nextStatus !== resource.status
+          || nextPreview !== resource.preview
+          || nextFileName !== resource.fileName
+          || nextPrompt !== resource.prompt
+        ) {
           changed = true;
           shotChanged = true;
           return {
@@ -630,7 +769,8 @@ const StoryboardEditor = ({ novelId, chapter }) => {
             status: nextStatus,
             statusLabel: getResourceStatusLabel(nextStatus),
             preview: nextPreview,
-            fileName: nextFileName
+            fileName: nextFileName,
+            prompt: nextPrompt
           };
         }
         return resource;
@@ -638,7 +778,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
       return shotChanged ? { ...shot, resources: nextResources } : shot;
     });
     if (changed) syncShotStatus(nextShots);
-  }, [libraryResources]);
+  }, [libraryResources, shots]);
 
   const activeLevelRequiredFields = useMemo(() => {
     const level = activeShot?.level || 'L1';
@@ -845,19 +985,22 @@ const StoryboardEditor = ({ novelId, chapter }) => {
     };
 
     if (type === 'characters') {
+      const explicitVariant = getResourceVariantDemand(resource);
       const { baseName, variantRequirement } = parseCharacterDemandVariant(resource.name);
-      const viewAngle = variantRequirement || inferCharacterViewAngleFromFileName(fileName);
+      const viewAngle = explicitVariant || variantRequirement || inferCharacterViewAngleFromFileName(fileName);
       const characterPool = Array.isArray(data?.resources?.characters) ? data.resources.characters : [];
       const baseCharacter = characterPool.find((item) => String(item?.name || '').trim().toLowerCase() === baseName.toLowerCase());
-      const targetCharacter = baseCharacter || resource;
-      const currentForm = Array.isArray(targetCharacter?.form) && targetCharacter.form.length > 0
-        ? targetCharacter.form[0]
-        : { id: crypto.randomUUID(), name: '默认形态', viewRequirements: [], viewAssets: [] };
+      const exactCharacter = characterPool.find((item) => String(item?.name || '').trim().toLowerCase() === String(resource?.name || '').trim().toLowerCase());
+      const targetCharacter = exactCharacter || baseCharacter || resource;
+      const existingForms = Array.isArray(targetCharacter?.form) && targetCharacter.form.length > 0
+        ? targetCharacter.form
+        : [{ id: crypto.randomUUID(), name: '默认形态', viewRequirements: [], viewAssets: [] }];
+      const currentForm = existingForms[0];
       const currentRequirements = Array.isArray(currentForm?.viewRequirements) ? currentForm.viewRequirements : [];
-      const nextRequirements = [CHARACTER_REQUIRED_VIEW_ANGLE, ...currentRequirements, ...(variantRequirement ? [variantRequirement] : [])]
+      const nextRequirements = [CHARACTER_REQUIRED_VIEW_ANGLE, ...currentRequirements, ...(viewAngle ? [viewAngle] : [])]
         .filter(Boolean)
         .filter((value, index, array) => array.indexOf(value) === index);
-      const nextViewAssets = [
+      const nextViewAssetsRaw = [
         ...(Array.isArray(currentForm?.viewAssets) ? currentForm.viewAssets : []),
         {
           id: crypto.randomUUID(),
@@ -867,6 +1010,50 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           uploadedAt: new Date().toISOString()
         }
       ];
+      const nextViewAssets = [];
+      const seenViewAssetKeys = new Set();
+      nextViewAssetsRaw.forEach((asset) => {
+        const key = `${normalizeVariantLookupKey(asset?.viewAngle || '')}::${String(asset?.fileName || '').trim().toLowerCase()}::${String(asset?.src || '').trim()}`;
+        if (seenViewAssetKeys.has(key)) return;
+        seenViewAssetKeys.add(key);
+        nextViewAssets.push(asset);
+      });
+
+      const existingImages = Array.isArray(targetCharacter?.images) ? targetCharacter.images : [];
+      const nextImagesRaw = [...existingImages, imageEntry];
+      const nextImages = [];
+      const seenImageKeys = new Set();
+      nextImagesRaw.forEach((item) => {
+        const key = `${String(item?.fileName || '').trim().toLowerCase()}::${String(item?.src || '').trim()}`;
+        if (seenImageKeys.has(key)) return;
+        seenImageKeys.add(key);
+        nextImages.push(item);
+      });
+
+      const mergedFirstForm = {
+        ...currentForm,
+        id: currentForm.id || crypto.randomUUID(),
+        name: currentForm.name || '默认形态',
+        viewRequirements: nextRequirements,
+        viewAssets: nextViewAssets
+      };
+      const nextForms = [mergedFirstForm, ...existingForms.slice(1)];
+      const existingMetaViewRequirements = Array.isArray(targetCharacter?.meta?.viewRequirements)
+        ? targetCharacter.meta.viewRequirements
+        : [];
+      const mergedMetaViewRequirements = [...existingMetaViewRequirements, ...nextRequirements]
+        .filter(Boolean)
+        .filter((value, index, array) => array.indexOf(value) === index);
+      const existingMetaViewAssets = Array.isArray(targetCharacter?.meta?.viewAssets) ? targetCharacter.meta.viewAssets : [];
+      const mergedMetaViewAssetsRaw = [...existingMetaViewAssets, ...nextViewAssets];
+      const mergedMetaViewAssets = [];
+      const seenMetaAssetKeys = new Set();
+      mergedMetaViewAssetsRaw.forEach((asset) => {
+        const key = `${normalizeVariantLookupKey(asset?.viewAngle || '')}::${String(asset?.fileName || '').trim().toLowerCase()}::${String(asset?.src || '').trim()}`;
+        if (seenMetaAssetKeys.has(key)) return;
+        seenMetaAssetKeys.add(key);
+        mergedMetaViewAssets.push(asset);
+      });
 
       upsertResource(type, {
         id: targetCharacter.id || resource.id,
@@ -875,43 +1062,127 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         aliases: Array.isArray(targetCharacter.aliases) ? targetCharacter.aliases : [],
         description: resource.prompt || targetCharacter.description || resource.name,
         status: '已完成',
-        isAvailable: nextRequirements.includes(CHARACTER_REQUIRED_VIEW_ANGLE),
-        images: [imageEntry],
+        isAvailable: mergedMetaViewRequirements.includes(CHARACTER_REQUIRED_VIEW_ANGLE),
+        images: nextImages,
         image: preview || '',
         preview: preview || '',
         fileName,
-        form: [{
-          ...currentForm,
-          id: currentForm.id || crypto.randomUUID(),
-          name: currentForm.name || '默认形态',
-          viewRequirements: nextRequirements,
-          viewAssets: nextViewAssets
-        }],
+        form: nextForms,
         meta: {
           ...(targetCharacter.meta || {}),
-          viewRequirements: nextRequirements,
-          viewAssets: nextViewAssets
+          viewRequirements: mergedMetaViewRequirements,
+          viewAssets: mergedMetaViewAssets
         },
         updatedAt: Date.now()
       });
       return;
     }
 
-    const typedMeta = type === 'scenes'
-      ? { sceneVariants: buildNamedSceneVariants(resource.name, preview || '', fileName) }
-      : (type === 'props'
-        ? { propVariants: buildNamedPropVariants(resource.name, preview || '', fileName) }
-        : {});
+    const pool = Array.isArray(data?.resources?.[type]) ? data.resources[type] : [];
+    const targetResource = pool.find((item) => String(item?.name || '').trim().toLowerCase() === String(resource?.name || '').trim().toLowerCase()) || resource;
+    const existingImages = Array.isArray(targetResource?.images) ? targetResource.images : [];
+    const nextImagesRaw = [...existingImages, imageEntry];
+    const nextImages = [];
+    const seenImageKeys = new Set();
+    nextImagesRaw.forEach((item) => {
+      const key = `${String(item?.fileName || '').trim().toLowerCase()}::${String(item?.src || '').trim()}`;
+      if (seenImageKeys.has(key)) return;
+      seenImageKeys.add(key);
+      nextImages.push(item);
+    });
+
+    const variantName = getResourceVariantDemand(resource) || resource.name;
+    let typedMeta = { ...(targetResource?.meta || {}) };
+
+    if (type === 'scenes') {
+      const existingVariants = Array.isArray(targetResource?.meta?.sceneVariants) ? targetResource.meta.sceneVariants : [];
+      const matchIndex = existingVariants.findIndex((variant) => isVariantLabelMatched(variant?.name || '', variantName));
+      const nextVariantImage = {
+        id: crypto.randomUUID(),
+        label: variantName || resource.name || '场景主图',
+        src: preview || '',
+        fileName
+      };
+      const nextVariants = [...existingVariants];
+      if (matchIndex >= 0) {
+        const current = nextVariants[matchIndex] || {};
+        const currentImages = Array.isArray(current?.images) ? current.images : [];
+        const mergedImages = [...currentImages, nextVariantImage].filter((item, index, array) => {
+          const key = `${String(item?.fileName || '').trim().toLowerCase()}::${String(item?.src || '').trim()}`;
+          return array.findIndex((row) => `${String(row?.fileName || '').trim().toLowerCase()}::${String(row?.src || '').trim()}` === key) === index;
+        });
+        nextVariants[matchIndex] = {
+          ...current,
+          name: current?.name || variantName,
+          imageRequirements: Array.isArray(current?.imageRequirements) && current.imageRequirements.length > 0
+            ? current.imageRequirements
+            : [variantName],
+          images: mergedImages,
+          updatedAt: Date.now()
+        };
+      } else {
+        nextVariants.push({
+          id: crypto.randomUUID(),
+          name: variantName,
+          imageRequirements: [variantName],
+          images: [nextVariantImage],
+          updatedAt: Date.now()
+        });
+      }
+      typedMeta = {
+        ...typedMeta,
+        sceneVariants: nextVariants
+      };
+    } else if (type === 'props') {
+      const existingVariants = Array.isArray(targetResource?.meta?.propVariants) ? targetResource.meta.propVariants : [];
+      const matchIndex = existingVariants.findIndex((variant) => isVariantLabelMatched(variant?.name || '', variantName));
+      const nextVariantImage = {
+        id: crypto.randomUUID(),
+        label: variantName || resource.name || '道具主图',
+        src: preview || '',
+        fileName
+      };
+      const nextVariants = [...existingVariants];
+      if (matchIndex >= 0) {
+        const current = nextVariants[matchIndex] || {};
+        const currentImages = Array.isArray(current?.images) ? current.images : [];
+        const mergedImages = [...currentImages, nextVariantImage].filter((item, index, array) => {
+          const key = `${String(item?.fileName || '').trim().toLowerCase()}::${String(item?.src || '').trim()}`;
+          return array.findIndex((row) => `${String(row?.fileName || '').trim().toLowerCase()}::${String(row?.src || '').trim()}` === key) === index;
+        });
+        nextVariants[matchIndex] = {
+          ...current,
+          name: current?.name || variantName,
+          imageRequirements: Array.isArray(current?.imageRequirements) && current.imageRequirements.length > 0
+            ? current.imageRequirements
+            : [variantName],
+          images: mergedImages,
+          updatedAt: Date.now()
+        };
+      } else {
+        nextVariants.push({
+          id: crypto.randomUUID(),
+          name: variantName,
+          imageRequirements: [variantName],
+          images: [nextVariantImage],
+          updatedAt: Date.now()
+        });
+      }
+      typedMeta = {
+        ...typedMeta,
+        propVariants: nextVariants
+      };
+    }
 
     upsertResource(type, {
-      id: resource.id,
+      id: targetResource.id || resource.id,
       type,
-      name: resource.name,
-      aliases: [],
-      description: resource.prompt || resource.name,
+      name: targetResource.name || resource.name,
+      aliases: Array.isArray(targetResource?.aliases) ? targetResource.aliases : [],
+      description: resource.prompt || targetResource.description || resource.name,
       status: '已完成',
       isAvailable: true,
-      images: [imageEntry],
+      images: nextImages,
       image: preview || '',
       preview: preview || '',
       fileName,
@@ -2083,8 +2354,104 @@ const StoryboardEditor = ({ novelId, chapter }) => {
         return;
       }
 
-      // 提示词导入统一采用“收敛更新”策略：仅更新现有镜头/资源，不新增资源条目。
-      const strictConvergeMode = true;
+      const existingLibraryByType = {
+        characters: Array.isArray(data?.resources?.characters) ? data.resources.characters : [],
+        scenes: Array.isArray(data?.resources?.scenes) ? data.resources.scenes : [],
+        props: Array.isArray(data?.resources?.props) ? data.resources.props : []
+      };
+      const pendingLibraryUpserts = [];
+      const pendingOperationLogs = [];
+
+      const queueLibraryPatch = (type, resourceName, entry) => {
+        const normalizedType = normalizeResourceType(type || 'props');
+        const normalizedName = String(resourceName || '').trim();
+        if (!normalizedName) return;
+        const libraryPool = existingLibraryByType[normalizedType] || [];
+        const existing = libraryPool.find((item) => String(item?.name || '').trim().toLowerCase() === normalizedName.toLowerCase());
+        if (!existing) return;
+
+        if (normalizedType === 'characters') {
+          const variantLabel = buildImportedPromptVariantLabel(entry);
+          if (!variantLabel) return;
+          const patched = appendCharacterViewRequirement(existing, variantLabel);
+          pendingLibraryUpserts.push({
+            type: 'characters',
+            resource: {
+              ...patched,
+              id: existing.id,
+              type: 'characters',
+              name: existing.name,
+              status: patched?.status || existing.status || '待补齐',
+              isAvailable: Boolean(patched?.isAvailable),
+              images: Array.isArray(patched?.images) ? patched.images : []
+            }
+          });
+          pendingOperationLogs.push({
+            action: 'import_material_prompt_character_variant',
+            resourceType: 'characters',
+            resourceName: existing.name,
+            detail: `导入提示词补充角色子项：${variantLabel}`
+          });
+          return;
+        }
+
+        if (normalizedType === 'scenes') {
+          const variantName = String(entry?.variantLabel || entry?.assetProfile || '').trim() || `${existing.name}-导入子项`;
+          const existingVariants = Array.isArray(existing?.meta?.sceneVariants) ? existing.meta.sceneVariants : [];
+          if (existingVariants.some((variant) => String(variant?.name || '').trim().toLowerCase() === variantName.toLowerCase())) return;
+          pendingLibraryUpserts.push({
+            type: 'scenes',
+            resource: {
+              ...existing,
+              meta: {
+                ...(existing?.meta || {}),
+                sceneVariants: [...existingVariants, {
+                  id: crypto.randomUUID(),
+                  name: variantName,
+                  imageRequirements: [String(entry?.prompt || '').trim() || variantName],
+                  images: [],
+                  updatedAt: Date.now()
+                }]
+              },
+              updatedAt: Date.now()
+            }
+          });
+          pendingOperationLogs.push({
+            action: 'import_material_prompt_scene_variant',
+            resourceType: 'scenes',
+            resourceName: existing.name,
+            detail: `导入提示词补充场景子项：${variantName}`
+          });
+          return;
+        }
+
+        const variantName = String(entry?.variantLabel || entry?.assetProfile || '').trim() || `${existing.name}-导入子项`;
+        const existingVariants = Array.isArray(existing?.meta?.propVariants) ? existing.meta.propVariants : [];
+        if (existingVariants.some((variant) => String(variant?.name || '').trim().toLowerCase() === variantName.toLowerCase())) return;
+        pendingLibraryUpserts.push({
+          type: 'props',
+          resource: {
+            ...existing,
+            meta: {
+              ...(existing?.meta || {}),
+              propVariants: [...existingVariants, {
+                id: crypto.randomUUID(),
+                name: variantName,
+                imageRequirements: [String(entry?.prompt || '').trim() || variantName],
+                images: [],
+                updatedAt: Date.now()
+              }]
+            },
+            updatedAt: Date.now()
+          }
+        });
+        pendingOperationLogs.push({
+          action: 'import_material_prompt_prop_variant',
+          resourceType: 'props',
+          resourceName: existing.name,
+          detail: `导入提示词补充道具子项：${variantName}`
+        });
+      };
 
       const nextShots = shots.map((shot) => {
         const source = shotPromptMap.get(normalizeShotLookupKey(shot.id)) || shotPromptMap.get(normalizeShotLookupKey(shot.shotNumber));
@@ -2122,6 +2489,7 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           consumedIndexes.add(targetIndex);
           consumeMap.set(key, consumedIndexes);
           const matched = candidates[targetIndex];
+          queueLibraryPatch(resource?.type, resource?.name, matched);
           return ensureResourceStructure({
             ...resource,
             prompt: matched.prompt || resource.prompt,
@@ -2143,16 +2511,118 @@ const StoryboardEditor = ({ novelId, chapter }) => {
           videoPromptDraft: source.videoPromptDraft || shot.videoPromptDraft || ''
         };
       });
+
+      const mergedUpserts = new Map();
+      pendingLibraryUpserts.forEach((item) => {
+        const id = String(item?.resource?.id || '');
+        if (!id) return;
+        const key = `${item.type}::${id}`;
+        const previous = mergedUpserts.get(key);
+        if (!previous) {
+          mergedUpserts.set(key, item);
+          return;
+        }
+
+        if (item.type === 'characters') {
+          const prevRequirements = Array.isArray(previous.resource?.meta?.viewRequirements)
+            ? previous.resource.meta.viewRequirements
+            : [];
+          const nextRequirements = Array.isArray(item.resource?.meta?.viewRequirements)
+            ? item.resource.meta.viewRequirements
+            : [];
+          const mergedRequirements = Array.from(new Set([...prevRequirements, ...nextRequirements].filter(Boolean)));
+
+          const prevForms = Array.isArray(previous.resource?.form) ? previous.resource.form : [];
+          const nextForms = Array.isArray(item.resource?.form) ? item.resource.form : [];
+          const mergedForm = {
+            ...(prevForms[0] || {}),
+            ...(nextForms[0] || {}),
+            viewRequirements: Array.from(new Set([
+              ...((prevForms[0]?.viewRequirements) || []),
+              ...((nextForms[0]?.viewRequirements) || [])
+            ].filter(Boolean))),
+            viewAssets: Array.isArray(prevForms[0]?.viewAssets) ? prevForms[0].viewAssets : []
+          };
+
+          mergedUpserts.set(key, {
+            ...item,
+            resource: {
+              ...previous.resource,
+              ...item.resource,
+              form: [mergedForm],
+              meta: {
+                ...(previous.resource?.meta || {}),
+                ...(item.resource?.meta || {}),
+                viewRequirements: mergedRequirements,
+                viewAssets: Array.isArray(previous.resource?.meta?.viewAssets)
+                  ? previous.resource.meta.viewAssets
+                  : []
+              }
+            }
+          });
+          return;
+        }
+
+        if (item.type === 'scenes') {
+          const prevVariants = Array.isArray(previous.resource?.meta?.sceneVariants) ? previous.resource.meta.sceneVariants : [];
+          const nextVariants = Array.isArray(item.resource?.meta?.sceneVariants) ? item.resource.meta.sceneVariants : [];
+          const variantMap = new Map();
+          [...prevVariants, ...nextVariants].forEach((variant) => {
+            const name = String(variant?.name || '').trim().toLowerCase();
+            if (!name) return;
+            variantMap.set(name, variant);
+          });
+          mergedUpserts.set(key, {
+            ...item,
+            resource: {
+              ...previous.resource,
+              ...item.resource,
+              meta: {
+                ...(previous.resource?.meta || {}),
+                ...(item.resource?.meta || {}),
+                sceneVariants: Array.from(variantMap.values())
+              }
+            }
+          });
+          return;
+        }
+
+        const prevVariants = Array.isArray(previous.resource?.meta?.propVariants) ? previous.resource.meta.propVariants : [];
+        const nextVariants = Array.isArray(item.resource?.meta?.propVariants) ? item.resource.meta.propVariants : [];
+        const variantMap = new Map();
+        [...prevVariants, ...nextVariants].forEach((variant) => {
+          const name = String(variant?.name || '').trim().toLowerCase();
+          if (!name) return;
+          variantMap.set(name, variant);
+        });
+        mergedUpserts.set(key, {
+          ...item,
+          resource: {
+            ...previous.resource,
+            ...item.resource,
+            meta: {
+              ...(previous.resource?.meta || {}),
+              ...(item.resource?.meta || {}),
+              propVariants: Array.from(variantMap.values())
+            }
+          }
+        });
+      });
+      mergedUpserts.forEach((item) => {
+        upsertResource(item.type, item.resource);
+      });
+      pendingOperationLogs.forEach((log) => appendResourceOperationLog(log));
+
       syncShotStatus(nextShots);
       updateChapterPatch((currentChapter) => ({
         editingWorkflow: {
           ...(currentChapter.editingWorkflow || {}),
           materialPromptImportedAt: Date.now(),
           promptStage: 'material_prompt',
-          strictConvergeMode
+          strictConvergeMode: false
         }
       }));
-      pushToast('提示词导入成功。\n已按收敛覆盖模式更新：仅覆盖现有镜头/资源，不会新增资源条目或资源库大类。', 'success');
+      pushToast('提示词导入成功。\n已覆盖镜头提示词，并按匹配资源自动补充资源库子项需求。', 'success');
     } catch (error) {
       pushToast(`提示词导入失败：${error instanceof Error ? error.message : '未知错误'}`, 'error');
     }

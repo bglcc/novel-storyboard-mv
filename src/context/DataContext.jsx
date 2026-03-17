@@ -514,12 +514,137 @@ export const DataProvider = ({ children }) => {
     }));
   };
 
+  const dedupeBy = (list = [], keyBuilder = () => '') => {
+    const output = [];
+    const seen = new Set();
+    list.forEach((item) => {
+      const key = keyBuilder(item);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      output.push(item);
+    });
+    return output;
+  };
+
+  const mergeVariantList = (existingList = [], incomingList = []) => {
+    const bucket = new Map();
+    [...existingList, ...incomingList].forEach((variant) => {
+      const nameKey = String(variant?.name || '').trim().toLowerCase();
+      if (!nameKey) return;
+      const previous = bucket.get(nameKey) || {};
+      const previousImages = Array.isArray(previous?.images) ? previous.images : [];
+      const nextImages = Array.isArray(variant?.images) ? variant.images : [];
+      const mergedImages = dedupeBy(
+        [...nextImages, ...previousImages],
+        (image) => `${String(image?.fileName || '').trim().toLowerCase()}::${String(image?.src || '').trim()}`
+      );
+      const previousReqs = Array.isArray(previous?.imageRequirements) ? previous.imageRequirements : [];
+      const nextReqs = Array.isArray(variant?.imageRequirements) ? variant.imageRequirements : [];
+      bucket.set(nameKey, {
+        ...previous,
+        ...variant,
+        id: previous?.id || variant?.id || uuidv4(),
+        name: variant?.name || previous?.name || '',
+        imageRequirements: Array.from(new Set([...previousReqs, ...nextReqs].filter(Boolean))),
+        images: mergedImages,
+        updatedAt: Date.now()
+      });
+    });
+    return Array.from(bucket.values());
+  };
+
+  const mergeCharacterForms = (existingForms = [], incomingForms = []) => {
+    const firstExisting = existingForms[0] || { id: uuidv4(), name: '默认形态', viewRequirements: [], viewAssets: [] };
+    const firstIncoming = incomingForms[0] || {};
+    const existingReqs = Array.isArray(firstExisting?.viewRequirements) ? firstExisting.viewRequirements : [];
+    const incomingReqs = Array.isArray(firstIncoming?.viewRequirements) ? firstIncoming.viewRequirements : [];
+    const existingAssets = Array.isArray(firstExisting?.viewAssets) ? firstExisting.viewAssets : [];
+    const incomingAssets = Array.isArray(firstIncoming?.viewAssets) ? firstIncoming.viewAssets : [];
+    const mergedAssets = dedupeBy(
+      [...incomingAssets, ...existingAssets],
+      (asset) => `${String(asset?.viewAngle || '').trim().toLowerCase()}::${String(asset?.fileName || '').trim().toLowerCase()}::${String(asset?.src || '').trim()}`
+    );
+    const mergedFirst = {
+      ...firstExisting,
+      ...firstIncoming,
+      id: firstExisting.id || firstIncoming.id || uuidv4(),
+      name: firstIncoming.name || firstExisting.name || '默认形态',
+      viewRequirements: Array.from(new Set([...existingReqs, ...incomingReqs].filter(Boolean))),
+      viewAssets: mergedAssets
+    };
+    const tail = incomingForms.length > 1 ? incomingForms.slice(1) : existingForms.slice(1);
+    return [mergedFirst, ...tail];
+  };
+
+  const mergeResourceRecord = (type, existing = {}, incoming = {}) => {
+    const mergedBase = { ...existing, ...incoming };
+    const mergedImages = dedupeBy(
+      [...(Array.isArray(incoming?.images) ? incoming.images : []), ...(Array.isArray(existing?.images) ? existing.images : [])],
+      (image) => `${String(image?.fileName || '').trim().toLowerCase()}::${String(image?.src || '').trim()}`
+    );
+
+    if (type === 'characters') {
+      const mergedForms = mergeCharacterForms(
+        Array.isArray(existing?.form) ? existing.form : [],
+        Array.isArray(incoming?.form) ? incoming.form : []
+      );
+      const existingMetaReqs = Array.isArray(existing?.meta?.viewRequirements) ? existing.meta.viewRequirements : [];
+      const incomingMetaReqs = Array.isArray(incoming?.meta?.viewRequirements) ? incoming.meta.viewRequirements : [];
+      const existingMetaAssets = Array.isArray(existing?.meta?.viewAssets) ? existing.meta.viewAssets : [];
+      const incomingMetaAssets = Array.isArray(incoming?.meta?.viewAssets) ? incoming.meta.viewAssets : [];
+      const mergedMetaAssets = dedupeBy(
+        [...incomingMetaAssets, ...existingMetaAssets],
+        (asset) => `${String(asset?.viewAngle || '').trim().toLowerCase()}::${String(asset?.fileName || '').trim().toLowerCase()}::${String(asset?.src || '').trim()}`
+      );
+      return {
+        ...mergedBase,
+        images: mergedImages,
+        form: mergedForms,
+        meta: {
+          ...(existing?.meta || {}),
+          ...(incoming?.meta || {}),
+          viewRequirements: Array.from(new Set([...existingMetaReqs, ...incomingMetaReqs].filter(Boolean))),
+          viewAssets: mergedMetaAssets
+        }
+      };
+    }
+
+    if (type === 'scenes') {
+      return {
+        ...mergedBase,
+        images: mergedImages,
+        meta: {
+          ...(existing?.meta || {}),
+          ...(incoming?.meta || {}),
+          sceneVariants: mergeVariantList(existing?.meta?.sceneVariants || [], incoming?.meta?.sceneVariants || [])
+        }
+      };
+    }
+
+    if (type === 'props') {
+      return {
+        ...mergedBase,
+        images: mergedImages,
+        meta: {
+          ...(existing?.meta || {}),
+          ...(incoming?.meta || {}),
+          propVariants: mergeVariantList(existing?.meta?.propVariants || [], incoming?.meta?.propVariants || [])
+        }
+      };
+    }
+
+    return {
+      ...mergedBase,
+      images: mergedImages
+    };
+  };
+
   const upsertResource = (type, resource) => {
     setData((prev) => {
       const current = prev.resources[type] || [];
       const existing = current.find((item) => item.id === resource.id || item.name === resource.name);
       const next = existing
-        ? current.map((item) => (item.id === existing.id ? { ...existing, ...resource } : item))
+        ? current.map((item) => (item.id === existing.id ? mergeResourceRecord(type, existing, resource) : item))
         : [...current, { ...resource, id: resource.id || uuidv4() }];
       return { ...prev, resources: { ...prev.resources, [type]: next } };
     });

@@ -194,7 +194,7 @@ const mapResourceTypeToKey = (value) => {
 const NovelDetail = () => {
   const { novelId } = useParams();
   const navigate = useNavigate();
-  const { data, updateChapter, updateNovel, ensurePlaceholderResources } = useData();
+  const { data, addChapter, updateChapter, updateNovel, ensurePlaceholderResources } = useData();
   const novel = data.novels.find((n) => n.id === novelId);
   const [activeTab, setActiveTab] = useState('outline');
   const [outlineEditMode, setOutlineEditMode] = useState(false);
@@ -574,6 +574,39 @@ const NovelDetail = () => {
     }
   };
 
+  const handleChapterUploadAsNew = async (chapter, event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      setUploadingChapterId(chapter?.id || 'new');
+      const text = await file.text();
+      const cleaned = text.replace(/^\uFEFF/, '').replace(/\u0000/g, '').trim();
+      if (!cleaned) {
+        alert('小说内容为空');
+        return;
+      }
+
+      let parsed;
+      try {
+        parsed = parseLenientJson(cleaned);
+      } catch (error) {
+        const fallbackContent = extractContentFromBrokenJson(cleaned);
+        if (!fallbackContent) throw error;
+        parsed = { content: fallbackContent };
+      }
+
+      const nextContent = parsed.content || parsed.text || parsed.chapter?.content || parsed.chapter?.text || '';
+      const nextTitle = parsed.title || parsed.chapter?.title || `${chapter?.title || '章节'}-新增`;
+      addChapter(novelId, nextTitle, nextContent || '');
+      alert('已新增章节并导入小说内容');
+    } catch (error) {
+      alert(`小说内容解析失败：${error?.message || '请检查 JSON 是否为 UTF-8 编码'}`);
+    } finally {
+      setUploadingChapterId('');
+      event.target.value = '';
+    }
+  };
+
   const handleGenerateSummary = (chapter) => {
     const detail = findDetailChapter(chapter);
     const payload = {
@@ -846,20 +879,20 @@ const NovelDetail = () => {
                 <div className="chapter-meta">
                   <div className={`status-pill ${statusColors[status] || 'gray'}`}>{status}</div>
                   <div className="chapter-actions">
+                    <label className="file-button">
+                      上传小说（新增章节）
+                      <input
+                        type="file"
+                        accept="application/json"
+                        disabled={uploadingChapterId === chapter.id}
+                        onChange={(event) => handleChapterUploadAsNew(chapter, event)}
+                      />
+                    </label>
                     {!showSummaryActions && (
                       <>
                         <button type="button" onClick={() => handleChapterNovelDownload(chapter)}>
                           生成小说
                         </button>
-                        <label className="file-button">
-                          上传小说
-                          <input
-                            type="file"
-                            accept="application/json"
-                            disabled={uploadingChapterId === chapter.id}
-                            onChange={(event) => handleChapterUpload(chapter.id, event)}
-                          />
-                        </label>
                       </>
                     )}
                     {showSummaryActions && !summaryComplete && (
@@ -1275,5 +1308,4 @@ const NovelDetail = () => {
     </div>
   );
 };
-
 export default NovelDetail;
